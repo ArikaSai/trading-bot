@@ -1,0 +1,20 @@
+# Crypto Trading Bot
+
+雙策略自動化加密貨幣交易系統，部署於 Binance Futures。
+
+## 策略
+- **SOL/USDT 15m**：EMA 趨勢跟蹤 + 盤整縮緊 + 2.0R 保本
+- **ADA/USDT 1h**：Donchian Channel 動量突破 + ATR Trailing Stop
+
+## 功能
+- 自適應 TWAP 拆單執行
+- 連虧熔斷機制
+- 月度 ML 再訓練 pipeline
+- Discord 即時通知
+- 互動式回測儀表板
+
+## 回測績效（2023-01 ~ 2026-03）
+| 指標 | SOL 獨立 | ADA 獨立 | 聯合策略 |
+|------|---------|---------|---------|
+| Sharpe | 2.648 | 2.653 | 2.859 |
+| Max DD | -48.37% | -36.03% | -51.82% |
