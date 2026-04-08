@@ -1,0 +1,43 @@
+{
+    "api": {
+        "exchange_id": "binance",
+        "api_key": "api_key",
+        "api_secret": "api_secret",
+        "discord_webhook_url": "discord_webhook_url"  
+    },
+    "trading": {
+        "symbol": "SOL/USDT",
+        "timeframe": "15m"
+    },
+    "risk": {
+        "initial_capital": 700,
+        "risk_per_trade": 0.1,
+        "max_pos_ratio": 0.5,
+        "leverage": 8,
+        "max_consec_losses": 3,
+        "taker_fee_rate": 0.0005,
+        "maintenance_margin_rate": 0.005,
+        "max_trade_usdt_cap": 200000
+    },
+    "strategy": {
+        "adx_threshold": 15,
+        "trailing_atr": 4,
+        "initial_sl_atr": 1.5,
+        "min_sl_pct": 0.003
+    },
+    "ada_donchian": {
+        "symbol": "ADA/USDT",
+        "timeframe": "1h",
+        "entry_n": 10,
+        "trail_atr": 3.0,
+        "atr_sl_mult": 2.0,
+        "risk_pct": 0.15,
+        "max_trade_cap": 200000,
+        "max_consec_losses": 3
+    },
+    "system": {
+        "live_trade": true,
+        "check_interval": 5,
+        "report_interval_minutes": 60
+    }
+}
