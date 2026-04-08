@@ -608,8 +608,8 @@ def _run_ada_solo(df_ada, initial_capital, start_date, end_date):
 if __name__ == "__main__":
     config = load_config("config.json")
 
-    START   = "2020-01-01"
-    END     = "2026-12-31"
+    START   = "2023-01-01"
+    END     = "2026-03-31"
     INITIAL = config['risk']['initial_capital']
 
     # 載入資料
