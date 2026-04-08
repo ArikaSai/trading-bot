@@ -857,13 +857,13 @@ class LiveTradingBot:
                 ada_close = float(cl_ada.close)
                 ada_atr   = float(cl_ada.ATR)
 
-                # Donchian 通道（用已收盤 K 棒的前 N 根）
+                # Donchian 通道（prev_ada 前 N 根，不含 prev_ada 自身）
                 ada_highs = df_ada['high'].values
                 ada_lows  = df_ada['low'].values
-                idx_ada   = len(df_ada) - 1
-                if idx_ada >= ADA_ENTRY_N:
-                    dc_high = float(np.max(ada_highs[idx_ada - ADA_ENTRY_N:idx_ada]))
-                    dc_low  = float(np.min(ada_lows[idx_ada - ADA_ENTRY_N:idx_ada]))
+                prev_idx  = len(df_ada) - 2   # prev_ada 的位置
+                if prev_idx >= ADA_ENTRY_N:
+                    dc_high = float(np.max(ada_highs[prev_idx - ADA_ENTRY_N:prev_idx]))
+                    dc_low  = float(np.min(ada_lows[prev_idx - ADA_ENTRY_N:prev_idx]))
                 else:
                     dc_high = dc_low = ada_close
 
