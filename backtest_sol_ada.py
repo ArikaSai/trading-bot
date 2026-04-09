@@ -29,13 +29,8 @@ SLIPPAGE          = 0.0010
 MAX_TOTAL_RISK    = 0.3
 MAX_POSITION_CAP  = 40_000_000.0   # SOL 幣安最大持倉名目價值
 
-# ADA Donchian 參數
-ADA_ENTRY_N       = 10
-ADA_TRAIL_ATR     = 3.0
-ADA_ATR_SL_MULT   = 2.0
-ADA_MAX_TRADE_CAP = 200_000.0
-ADA_MAX_CONSEC    = 3              # ADA 熔斷門檻
-ADA_FEE           = 0.0005
+# ADA Donchian 參數（從 config.json 讀取）
+# — 在 run_combined_backtest() 中賦值 —
 
 
 def load_config(path="config.json") -> dict:
@@ -61,6 +56,16 @@ def run_combined_backtest(df_sol, df_ada, config,
     sol_trail_atr      = config['strategy']['trailing_atr']
     sol_sl_atr         = config['strategy']['initial_sl_atr']
     sol_adx_th         = config['strategy']['adx_threshold']
+
+    # ── ADA 參數 ─────────────────────────────────────────────
+    ada_cfg            = config['ada_donchian']
+    ADA_ENTRY_N        = ada_cfg['entry_n']
+    ADA_TRAIL_ATR      = ada_cfg['trail_atr']
+    ADA_ATR_SL_MULT    = ada_cfg['atr_sl_mult']
+    ADA_MAX_TRADE_CAP  = ada_cfg.get('max_trade_cap', 200000.0)
+    ADA_MAX_CONSEC     = ada_cfg.get('max_consec_losses', 3)
+    ADA_FEE            = config['risk'].get('taker_fee_rate', 0.0005)
+    ada_risk_pct       = ada_cfg.get('risk_pct', 0.15)
 
     # ── 時間過濾 ─────────────────────────────────────────────
     t_start = pd.Timestamp(start_date)
@@ -413,7 +418,7 @@ def run_combined_backtest(df_sol, df_ada, config,
                         if available > 10:
                             N = max(1, int(available / ADA_MAX_TRADE_CAP))
                             if N == 1:
-                                raw_sz = (available * 0.15) / risk_per_unit
+                                raw_sz = (available * ada_risk_pct) / risk_per_unit
                                 max_sz = available / a_C
                                 size_each = min(raw_sz, max_sz)
                             else:
@@ -565,17 +570,20 @@ def plot_combined(equity_combined, equity_sol_only, equity_ada_only,
 #  ADA 獨立回測（基準對比用）
 # ══════════════════════════════════════════════════════════════
 
-def _run_ada_solo(df_ada, initial_capital, start_date, end_date):
+def _run_ada_solo(df_ada, config, start_date, end_date):
     """用 backtest_donchian 的邏輯跑 ADA 獨立"""
     from backtest_donchian import run_backtest as donchian_bt
     t_start = pd.Timestamp(start_date); t_end = pd.Timestamp(end_date)
     df = df_ada[(df_ada.index >= t_start) & (df_ada.index <= t_end)].copy()
 
+    ada_cfg = config['ada_donchian']
     cfg = {
-        'entry_n': ADA_ENTRY_N, 'trail_atr': ADA_TRAIL_ATR,
-        'atr_sl_mult': ADA_ATR_SL_MULT, 'risk_pct': 0.15,
-        'leverage': 1, 'fee_rate': ADA_FEE, 'slippage': SLIPPAGE,
-        'initial_cap': initial_capital, 'max_trade_cap': ADA_MAX_TRADE_CAP,
+        'entry_n': ada_cfg['entry_n'], 'trail_atr': ada_cfg['trail_atr'],
+        'atr_sl_mult': ada_cfg['atr_sl_mult'], 'risk_pct': ada_cfg.get('risk_pct', 0.15),
+        'leverage': 1, 'fee_rate': config['risk'].get('taker_fee_rate', 0.0005),
+        'slippage': SLIPPAGE,
+        'initial_cap': config['risk']['initial_capital'],
+        'max_trade_cap': ada_cfg.get('max_trade_cap', 200000.0),
     }
     trades, equity = donchian_bt(df, cfg)
     eq_df = pd.DataFrame(equity)
@@ -586,13 +594,14 @@ def _run_ada_solo(df_ada, initial_capital, start_date, end_date):
     daily_ret = daily_eq.pct_change().dropna()
     sharpe = float(daily_ret.mean() / daily_ret.std() * np.sqrt(365)) if daily_ret.std() > 0 else 0.0
 
+    init_cap = cfg['initial_cap']
     final = eq_df['equity'].iloc[-1]
     mdd   = ((eq_df['equity'] - eq_df['equity'].cummax()) / eq_df['equity'].cummax()).min() * 100
     t_df  = pd.DataFrame(trades) if trades else pd.DataFrame()
     wr    = (t_df['PnL'] > 0).mean() * 100 if len(t_df) > 0 else 0
 
     return eq_df, {
-        'total_return': round((final - initial_capital) / initial_capital * 100, 2),
+        'total_return': round((final - init_cap) / init_cap * 100, 2),
         'true_mdd': round(mdd, 2), 'sharpe': round(sharpe, 3),
         'sol_win_rate': 0, 'ada_win_rate': round(wr, 2),
         'total_trades': len(t_df), 'sol_trades': 0, 'ada_trades': len(t_df),
@@ -608,8 +617,8 @@ def _run_ada_solo(df_ada, initial_capital, start_date, end_date):
 if __name__ == "__main__":
     config = load_config("config.json")
 
-    START   = "2023-01-01"
-    END     = "2026-03-31"
+    START   = config.get('backtest', {}).get('start_date', '2023-01-01')
+    END     = config.get('backtest', {}).get('end_date', '2026-04-09')
     INITIAL = config['risk']['initial_capital']
 
     # 載入資料
@@ -634,9 +643,9 @@ if __name__ == "__main__":
 
     # ── SOL 獨立基準 ─────────────────────────────────────────
     print("\n[SOL] Independent baseline...")
-    from backtest import run_backtest as sol_bt, calc_metrics as sol_calc, filter_date_range
+    from backtest_sol import run_backtest as sol_bt, calc_metrics as sol_calc, filter_date_range
     sol_only_df = filter_date_range(df_sol.copy(), START, END)
-    t_sol, e_sol = sol_bt(sol_only_df, config)
+    t_sol, e_sol, _ = sol_bt(sol_only_df, config)
     m_sol_raw = sol_calc(t_sol, e_sol, INITIAL)
     e_sol_ts = e_sol.copy()
     e_sol_ts.index = pd.to_datetime(e_sol_ts['timestamp'])
@@ -655,7 +664,7 @@ if __name__ == "__main__":
 
     # ── ADA 獨立基準 ─────────────────────────────────────────
     print("\n[ADA] Independent baseline...")
-    equity_ada_only, m_ada = _run_ada_solo(df_ada, INITIAL, START, END)
+    equity_ada_only, m_ada = _run_ada_solo(df_ada, config, START, END)
 
     # ── 報告 ─────────────────────────────────────────────────
     print(f"\n{'='*60}")

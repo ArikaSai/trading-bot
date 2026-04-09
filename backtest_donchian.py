@@ -8,6 +8,7 @@ Donchian Channel Breakout 回測（ATR Trailing 出場）
 """
 
 import argparse
+import json
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -285,15 +286,38 @@ def plot_equity(equity: list, symbol: str, cfg: dict):
     plt.show()
 
 
+def _load_defaults_from_config():
+    """從 config.json 讀取 ada_donchian 區塊，合併到 DEFAULTS"""
+    try:
+        with open(Path(__file__).parent / 'config.json', 'r', encoding='utf-8') as f:
+            config = json.load(f)
+        ada = config.get('ada_donchian', {})
+        risk = config.get('risk', {})
+        return {
+            'entry_n':       ada.get('entry_n', DEFAULTS['entry_n']),
+            'trail_atr':     ada.get('trail_atr', DEFAULTS['trail_atr']),
+            'atr_sl_mult':   ada.get('atr_sl_mult', DEFAULTS['atr_sl_mult']),
+            'risk_pct':      ada.get('risk_pct', DEFAULTS['risk_pct']),
+            'leverage':      DEFAULTS['leverage'],
+            'fee_rate':      risk.get('taker_fee_rate', DEFAULTS['fee_rate']),
+            'slippage':      DEFAULTS['slippage'],
+            'initial_cap':   risk.get('initial_capital', DEFAULTS['initial_cap']),
+            'max_trade_cap': ada.get('max_trade_cap', DEFAULTS['max_trade_cap']),
+        }
+    except FileNotFoundError:
+        return dict(DEFAULTS)
+
+
 def main():
+    defaults = _load_defaults_from_config()
     parser = argparse.ArgumentParser(description='Donchian Channel Breakout Backtest')
     parser.add_argument('--symbol', default='ADA', help='BTC or ETH')
-    for k, v in DEFAULTS.items():
+    for k, v in defaults.items():
         parser.add_argument(f'--{k}', type=type(v), default=v)
     args = parser.parse_args()
 
     symbol = args.symbol.upper()
-    cfg = {k: getattr(args, k) for k in DEFAULTS}
+    cfg = {k: getattr(args, k) for k in defaults}
 
     print(f"📊 Donchian Channel 回測 | {symbol}/USDT 1H")
     print(f"   入場 N={cfg['entry_n']} | ATR trailing ×{cfg['trail_atr']} | TWAP 門檻 {cfg['max_trade_cap']:,.0f}")

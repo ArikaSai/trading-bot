@@ -10,16 +10,7 @@ import os
 from datetime import datetime, timedelta, timezone
 from strategy import CoreStrategy
 
-# ══════════════════════════════════════════════════════════════
-#  ADA Donchian 突破策略固定參數
-# ══════════════════════════════════════════════════════════════
-ADA_ENTRY_N       = 10       # Donchian 通道長度（前 N 根 K 棒）
-ADA_TRAIL_ATR     = 3.0      # ATR trailing 倍數
-ADA_ATR_SL_MULT   = 2.0      # 倉位計算用 SL 倍數
-ADA_RISK_PCT      = 0.15     # 每筆風險佔可用資金比例
-ADA_MAX_TRADE_CAP = 200_000.0  # 單筆最大名目價值（TWAP 拆單門檻）
-ADA_MAX_CONSEC    = 3        # ADA 熔斷門檻（連損次數）
-ADA_FEE           = 0.0005   # taker 手續費
+# ADA Donchian 參數：在 __init__ 中從 config['ada_donchian'] 讀取
 
 
 class LiveTradingBot:
@@ -61,8 +52,18 @@ class LiveTradingBot:
         self.taker_fee_rate     = self.config['risk'].get('taker_fee_rate', 0.0005)
         self.mmr                = self.config['risk'].get('maintenance_margin_rate', 0.005)
 
-        self.symbols    = {'SOL': 'SOL/USDT', 'ADA': 'ADA/USDT'}
-        self.timeframes = {'SOL': '15m',       'ADA': '1h'}
+        # ── ADA Donchian 參數（從 config 讀取）───────────────
+        ada_cfg = self.config.get('ada_donchian', {})
+        self.ADA_ENTRY_N       = ada_cfg.get('entry_n', 10)
+        self.ADA_TRAIL_ATR     = ada_cfg.get('trail_atr', 3.0)
+        self.ADA_ATR_SL_MULT   = ada_cfg.get('atr_sl_mult', 2.0)
+        self.ADA_RISK_PCT      = ada_cfg.get('risk_pct', 0.15)
+        self.ADA_MAX_TRADE_CAP = ada_cfg.get('max_trade_cap', 200_000.0)
+        self.ADA_MAX_CONSEC    = ada_cfg.get('max_consec_losses', 3)
+        self.ADA_FEE           = self.taker_fee_rate
+
+        self.symbols    = {'SOL': 'SOL/USDT', 'ADA': ada_cfg.get('symbol', 'ADA/USDT')}
+        self.timeframes = {'SOL': '15m',       'ADA': ada_cfg.get('timeframe', '1h')}
         self._close_time = {}   # 記錄各策略最近平倉時間，防止 API 快取觸發雲端接管
 
         # SOL 盤整縮緊：N=8, X=1.25, tight=1.0×
@@ -100,7 +101,7 @@ class LiveTradingBot:
 
         print(f"🤖 雙核心機器人就緒 | 模式: {'🔴 實盤' if self.live_trade else '🟢 模擬'}")
         print(f"   SOL 趨勢: {self.risk_per_trade*100}% 風險 | {self.leverage}x | 熔斷 {self.max_consec_losses} 次")
-        print(f"   ADA Donchian: N={ADA_ENTRY_N} | Trail ×{ADA_TRAIL_ATR} | 熔斷 {ADA_MAX_CONSEC} 次")
+        print(f"   ADA Donchian: N={self.ADA_ENTRY_N} | Trail ×{self.ADA_TRAIL_ATR} | 熔斷 {self.ADA_MAX_CONSEC} 次")
 
     # ── 狀態字典 ─────────────────────────────────────────────────────
 
@@ -252,7 +253,7 @@ class LiveTradingBot:
                 ada_block = (
                     f"🔵 ADA {side} | 進場: {ada_s['entry_price']:.4f} | 現價: {ada_price:.4f}\n"
                     f"   {pnl_e} 浮盈虧: {unr:+.2f} U | SL: {ada_s['trailing_stop']:.4f}\n"
-                    f"   熔斷: {ada_cb} | 連損: {ada_s['consecutive_losses']}/{ADA_MAX_CONSEC}"
+                    f"   熔斷: {ada_cb} | 連損: {ada_s['consecutive_losses']}/{self.ADA_MAX_CONSEC}"
                 )
             else:
                 try:
@@ -262,7 +263,7 @@ class LiveTradingBot:
                 cb_tag = " | 🛡️ 保護中" if ada_s['skip_next_trade'] or ada_s['in_skip_zone'] else ""
                 ada_block = (
                     f"🔵 ADA 空倉 | 現價: {ada_price:.4f} | 👁️ 待機{cb_tag}\n"
-                    f"   連損: {ada_s['consecutive_losses']}/{ADA_MAX_CONSEC}"
+                    f"   連損: {ada_s['consecutive_losses']}/{self.ADA_MAX_CONSEC}"
                 )
             msg = (
                 f"⏰ **整點報告** | {now_tw.strftime('%m/%d %H:00')}\n"
@@ -392,7 +393,7 @@ class LiveTradingBot:
             state['consecutive_losses'] = 0
         else:
             state['consecutive_losses'] += 1
-            threshold = self.max_consec_losses if strat_name == 'SOL' else ADA_MAX_CONSEC
+            threshold = self.max_consec_losses if strat_name == 'SOL' else self.ADA_MAX_CONSEC
             if state['consecutive_losses'] >= threshold:
                 state['consecutive_losses'] = 0
                 state['skip_next_trade'] = True
@@ -464,7 +465,7 @@ class LiveTradingBot:
             state['highest_price'] = max(state['highest_price'], cur_high)
             state['trailing_stop'] = max(
                 state['trailing_stop'],
-                state['highest_price'] - ADA_TRAIL_ATR * cur_atr
+                state['highest_price'] - self.ADA_TRAIL_ATR * cur_atr
             )
             if cur_low <= state['trailing_stop']:
                 side = 'sell'
@@ -474,7 +475,7 @@ class LiveTradingBot:
             state['lowest_price'] = min(state['lowest_price'], cur_low)
             state['trailing_stop'] = min(
                 state['trailing_stop'],
-                state['lowest_price'] + ADA_TRAIL_ATR * cur_atr
+                state['lowest_price'] + self.ADA_TRAIL_ATR * cur_atr
             )
             if cur_high >= state['trailing_stop']:
                 side = 'buy'
@@ -513,8 +514,8 @@ class LiveTradingBot:
 
                         last_atr               = float(temp['ATR'].iloc[-1])
                         if strat_name == 'ADA':
-                            sl_dist    = max(ADA_ATR_SL_MULT * last_atr, state['entry_price'] * self.min_sl_pct)
-                            trail_dist = max(ADA_TRAIL_ATR * last_atr, state['entry_price'] * self.min_sl_pct)
+                            sl_dist    = max(self.ADA_ATR_SL_MULT * last_atr, state['entry_price'] * self.min_sl_pct)
+                            trail_dist = max(self.ADA_TRAIL_ATR * last_atr, state['entry_price'] * self.min_sl_pct)
                         else:
                             sl_dist    = max(self.initial_sl_atr * last_atr, state['entry_price'] * self.min_sl_pct)
                             trail_dist = sl_dist
@@ -861,9 +862,9 @@ class LiveTradingBot:
                 ada_highs = df_ada['high'].values
                 ada_lows  = df_ada['low'].values
                 prev_idx  = len(df_ada) - 2   # prev_ada 的位置
-                if prev_idx >= ADA_ENTRY_N:
-                    dc_high = float(np.max(ada_highs[prev_idx - ADA_ENTRY_N:prev_idx]))
-                    dc_low  = float(np.min(ada_lows[prev_idx - ADA_ENTRY_N:prev_idx]))
+                if prev_idx >= self.ADA_ENTRY_N:
+                    dc_high = float(np.max(ada_highs[prev_idx - self.ADA_ENTRY_N:prev_idx]))
+                    dc_low  = float(np.min(ada_lows[prev_idx - self.ADA_ENTRY_N:prev_idx]))
                 else:
                     dc_high = dc_low = ada_close
 
@@ -942,7 +943,7 @@ class LiveTradingBot:
                             print("🔓 ADA 熔斷解除")
                     elif direction != 0 and (time.time() - self._close_time.get('ADA', 0)) >= 60:
                         prev_atr = float(prev_ada.ATR)
-                        risk_per_unit = ADA_ATR_SL_MULT * prev_atr
+                        risk_per_unit = self.ADA_ATR_SL_MULT * prev_atr
                         if risk_per_unit > 0:
                             if self.live_trade:
                                 bal_data  = self.exchange.fetch_balance()
@@ -952,20 +953,20 @@ class LiveTradingBot:
                                 total_bal = free_bal = self.capital
 
                             # 自適應 TWAP：計算 N
-                            _N = max(1, int(total_bal * self.leverage / ADA_MAX_TRADE_CAP))
+                            _N = max(1, int(total_bal * self.leverage / self.ADA_MAX_TRADE_CAP))
                             if _N == 1:
                                 size = min(
-                                    (total_bal * ADA_RISK_PCT) / risk_per_unit,
+                                    (total_bal * self.ADA_RISK_PCT) / risk_per_unit,
                                     (total_bal * self.leverage) / float(cl_ada.open)
                                 )
                             else:
-                                size = ADA_MAX_TRADE_CAP / float(cl_ada.open)
+                                size = self.ADA_MAX_TRADE_CAP / float(cl_ada.open)
 
                             max_size_by_free_margin = (free_bal * self.leverage) / float(cl_ada.open)
                             size = min(size, max_size_by_free_margin)
 
-                            sl_dist    = max(ADA_ATR_SL_MULT * prev_atr, float(cl_ada.open) * self.min_sl_pct)
-                            trail_dist = max(ADA_TRAIL_ATR * prev_atr, float(cl_ada.open) * self.min_sl_pct)
+                            sl_dist    = max(self.ADA_ATR_SL_MULT * prev_atr, float(cl_ada.open) * self.min_sl_pct)
+                            trail_dist = max(self.ADA_TRAIL_ATR * prev_atr, float(cl_ada.open) * self.min_sl_pct)
 
                             if size > 0:
                                 now_tw = datetime.now(timezone.utc) + timedelta(hours=8)
@@ -1003,7 +1004,7 @@ class LiveTradingBot:
 
                                 if ada_s['position'] != 0:
                                     self._ada_twap_direction = ada_s['position']
-                                    self._ada_twap_size_each = (ADA_MAX_TRADE_CAP / ada_s['entry_price']) if _N > 1 else size
+                                    self._ada_twap_size_each = (self.ADA_MAX_TRADE_CAP / ada_s['entry_price']) if _N > 1 else size
                                     self._ada_twap_remaining = _N - 1
                                     self._ada_twap_active    = self._ada_twap_remaining > 0
                                     self.save_order_state()
