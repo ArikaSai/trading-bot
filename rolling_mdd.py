@@ -35,8 +35,8 @@ starts = pd.date_range(
     freq='MS'   # Month Start
 )
 
-print(f"[OK] {len(df)} bars | {first_date.strftime('%Y-%m-%d')} ~ {last_date.strftime('%Y-%m-%d')}")
-print(f"[RUN] {len(starts)} rolling windows ({WINDOW_MONTHS}M each)\n")
+print(f"[OK] {len(df)} 根 K 棒 | {first_date.strftime('%Y-%m-%d')} ~ {last_date.strftime('%Y-%m-%d')}")
+print(f"[執行] {len(starts)} 個滾動窗口（每窗 {WINDOW_MONTHS} 個月）\n")
 
 results = []
 for s in starts:
@@ -65,7 +65,7 @@ rdf = pd.DataFrame(results)
 # 排序：MDD 最差排最前
 rdf_sorted = rdf.sort_values('MDD_%').reset_index(drop=True)
 
-print(f"{'#':>3}  {'Start':<12} {'End':<12} {'Trades':>6} {'Return%':>9} {'MDD%':>8} {'Sharpe':>7} {'WinR%':>6}")
+print(f"{'#':>3}  {'起始':<12} {'結束':<12} {'交易數':>6} {'報酬%':>9} {'MDD%':>8} {'Sharpe':>7} {'勝率%':>6}")
 print("-" * 72)
 for i, r in rdf_sorted.iterrows():
     print(f"{i+1:>3}  {r['Start']:<12} {r['End']:<12} {r['Trades']:>6} "
@@ -77,7 +77,7 @@ print(f"MDD 最佳時段: {rdf_sorted.iloc[-1]['Start']} ~ {rdf_sorted.iloc[-1][
 
 # 統計
 print(f"\n{'='*72}")
-print(f"[STATS] {len(rdf)} windows")
+print(f"[統計] {len(rdf)} 個窗口")
 print(f"  MDD  平均: {rdf['MDD_%'].mean():.2f}% | 中位: {rdf['MDD_%'].median():.2f}% | 最差: {rdf['MDD_%'].min():.2f}%")
 print(f"  收益 平均: {rdf['Return_%'].mean():.1f}% | 中位: {rdf['Return_%'].median():.1f}%")
 print(f"  虧損窗口數: {(rdf['Return_%'] < 0).sum()} / {len(rdf)}")
@@ -89,17 +89,17 @@ x_dates = pd.to_datetime(rdf['Start'])
 colors  = ['#e74c3c' if m < -30 else '#f39c12' if m < -15 else '#2ecc71' for m in rdf['MDD_%']]
 
 ax1.bar(x_dates, rdf['MDD_%'].values, width=25, color=colors, alpha=0.8)
-ax1.axhline(rdf['MDD_%'].mean(), color='gray', linestyle='--', linewidth=0.8, label=f"avg {rdf['MDD_%'].mean():.1f}%")
-ax1.set_ylabel('MDD %')
-ax1.set_title(f'SOL {WINDOW_MONTHS}M Rolling MDD (red < -30%, orange < -15%, green > -15%)', fontweight='bold')
+ax1.axhline(rdf['MDD_%'].mean(), color='gray', linestyle='--', linewidth=0.8, label=f"平均 {rdf['MDD_%'].mean():.1f}%")
+ax1.set_ylabel('最大回撤 %')
+ax1.set_title(f'SOL {WINDOW_MONTHS}M 滾動 MDD（紅 < -30%, 橘 < -15%, 綠 > -15%）', fontweight='bold')
 ax1.legend()
 ax1.grid(True, alpha=0.3)
 
 ax2.bar(x_dates, rdf['Return_%'].values, width=25,
         color=['#2ecc71' if r > 0 else '#e74c3c' for r in rdf['Return_%']], alpha=0.8)
 ax2.axhline(0, color='black', linewidth=0.5)
-ax2.set_ylabel('Return %')
-ax2.set_title(f'SOL {WINDOW_MONTHS}M Rolling Return', fontweight='bold')
+ax2.set_ylabel('報酬率 %')
+ax2.set_title(f'SOL {WINDOW_MONTHS}M 滾動報酬', fontweight='bold')
 ax2.grid(True, alpha=0.3)
 
 fig.autofmt_xdate()

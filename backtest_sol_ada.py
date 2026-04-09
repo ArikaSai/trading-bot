@@ -502,16 +502,16 @@ def plot_combined(equity_combined, equity_sol_only, equity_ada_only,
 
     ax1 = fig.add_subplot(gs[0, :])
     for eq, label, color in [
-        (equity_combined, f"聯合策略 (Sharpe {m_combined.get('sharpe','N/A')})", "#15b959"),
-        (equity_sol_only, f"SOL 獨立 (Return {m_sol.get('total_return','N/A')}%)", "#2d82bb"),
-        (equity_ada_only, f"ADA 獨立 (Return {m_ada.get('total_return','N/A')}%)", "#df8b41"),
+        (equity_combined, f"聯合策略（Sharpe {m_combined.get('sharpe','N/A')}）", "#15b959"),
+        (equity_sol_only, f"SOL 獨立（報酬 {m_sol.get('total_return','N/A')}%）", "#2d82bb"),
+        (equity_ada_only, f"ADA 獨立（報酬 {m_ada.get('total_return','N/A')}%）", "#df8b41"),
     ]:
         ts, val = _to_ts_series(eq)
         if ts is not None:
             ax1.plot(ts, val, label=label, linewidth=1.2, color=color)
 
     ax1.set_title('\n聯合 vs 獨立策略淨值曲線（對數刻度）\n', fontsize=12, fontweight='bold')
-    ax1.set_ylabel('Capital (USDT) - Log Scale')
+    ax1.set_ylabel('資金 (USDT) - 對數刻度')
     ax1.set_yscale('log')
     ax1.legend()
     ax1.grid(True, which='both', linestyle='--', alpha=0.4)
@@ -520,7 +520,7 @@ def plot_combined(equity_combined, equity_sol_only, equity_ada_only,
     plt.setp(ax1.xaxis.get_majorticklabels(), rotation=30, ha='right')
 
     ax2 = fig.add_subplot(gs[1, 0])
-    metrics_labels = ['Total Return %', 'Sharpe', '|Max DD %|']
+    metrics_labels = ['總報酬率 %', 'Sharpe', '|最大回撤 %|']
     combined_vals  = [m_combined.get('total_return', 0), m_combined.get('sharpe', 0), abs(m_combined.get('true_mdd', 0))]
     sol_vals       = [m_sol.get('total_return', 0), m_sol.get('sharpe', 0), abs(m_sol.get('true_mdd', 0))]
     ada_vals       = [m_ada.get('total_return', 0), m_ada.get('sharpe', 0), abs(m_ada.get('true_mdd', 0))]
@@ -540,7 +540,7 @@ def plot_combined(equity_combined, equity_sol_only, equity_ada_only,
         f"最終資金:   {m_combined.get('final_capital', 'N/A')} U",
         f"總報酬率:   {m_combined.get('total_return', 'N/A')}%",
         f"Sharpe:     {m_combined.get('sharpe', 'N/A')}",
-        f"Max DD:     {m_combined.get('true_mdd', 'N/A')}%",
+        f"最大回撤:   {m_combined.get('true_mdd', 'N/A')}%",
         f"總交易數:   {m_combined.get('total_trades', 'N/A')} 筆",
         f"  SOL:      {m_combined.get('sol_trades', 0)} 筆 "
         f"(勝率 {m_combined.get('sol_win_rate', 0)}%)",
@@ -622,27 +622,27 @@ if __name__ == "__main__":
     INITIAL = config['risk']['initial_capital']
 
     # 載入資料
-    print("[READ] Loading SOL 15m data...")
+    print("[讀取] 載入 SOL 15m 資料...")
     df_sol = pd.read_csv("data/SOLUSDT_15m.csv", index_col='timestamp', parse_dates=True)
     df_sol = df_sol.iloc[:-1]
     df_sol = CoreStrategy.prepare_data(df_sol)
-    print(f"  [OK] SOL {len(df_sol)} bars")
+    print(f"  [OK] SOL {len(df_sol)} 根 K 棒")
 
-    print("[READ] Loading ADA 1h data...")
+    print("[讀取] 載入 ADA 1h 資料...")
     df_ada = pd.read_csv("data/ADAUSDT_1h.csv", index_col='timestamp', parse_dates=True)
     df_ada = df_ada.iloc[:-1]
-    print(f"  [OK] ADA {len(df_ada)} bars")
+    print(f"  [OK] ADA {len(df_ada)} 根 K 棒")
 
     # ── 聯合回測 ─────────────────────────────────────────────
     print(f"\n{'='*60}")
-    print("[RUN] SOL + ADA Combined backtest...")
+    print("[執行] SOL + ADA 聯合回測...")
     trades_df, equity_combined, diag = run_combined_backtest(
         df_sol, df_ada, config, START, END
     )
     m_combined = calc_metrics(trades_df, equity_combined, INITIAL)
 
     # ── SOL 獨立基準 ─────────────────────────────────────────
-    print("\n[SOL] Independent baseline...")
+    print("\n[SOL] 獨立基準回測...")
     from backtest_sol import run_backtest as sol_bt, calc_metrics as sol_calc, filter_date_range
     sol_only_df = filter_date_range(df_sol.copy(), START, END)
     t_sol, e_sol, _ = sol_bt(sol_only_df, config)
@@ -663,26 +663,26 @@ if __name__ == "__main__":
     }
 
     # ── ADA 獨立基準 ─────────────────────────────────────────
-    print("\n[ADA] Independent baseline...")
+    print("\n[ADA] 獨立基準回測...")
     equity_ada_only, m_ada = _run_ada_solo(df_ada, config, START, END)
 
     # ── 報告 ─────────────────────────────────────────────────
     print(f"\n{'='*60}")
-    print("[SUMMARY] SOL + ADA 聯合 vs 獨立")
+    print("[總覽] SOL + ADA 聯合 vs 獨立")
     print('='*60)
     print(f"{'指標':<20} {'SOL 獨立':>12} {'ADA 獨立':>12} {'聯合策略':>12}")
     print('-'*60)
     for k, label in [
         ('total_return',  '總報酬率 %'),
-        ('true_mdd',      'Max DD %'),
+        ('true_mdd',      '最大回撤 %'),
         ('sharpe',        'Sharpe'),
         ('total_trades',  '總交易數'),
         ('sol_trades',    'SOL 交易數'),
         ('ada_trades',    'ADA 交易數'),
         ('sol_win_rate',  'SOL 勝率 %'),
         ('ada_win_rate',  'ADA 勝率 %'),
-        ('sol_pnl',       'SOL PnL'),
-        ('ada_pnl',       'ADA PnL'),
+        ('sol_pnl',       'SOL 損益'),
+        ('ada_pnl',       'ADA 損益'),
         ('final_capital', '最終資金'),
     ]:
         vs = m_sol.get(k, '-'); va = m_ada.get(k, '-'); vc = m_combined.get(k, '-')
@@ -698,10 +698,10 @@ if __name__ == "__main__":
     ada_pct = ada_pnl / total_pnl * 100 if total_pnl != 0 else 0
 
     print(f"\n{'='*60}")
-    print("[CONTRIBUTION] 個別幣種貢獻")
+    print("[貢獻] 個別幣種貢獻")
     print('='*60)
-    print(f"  SOL 貢獻 PnL:  {sol_pnl:>14,.2f} U  ({sol_pct:+.1f}%)")
-    print(f"  ADA 貢獻 PnL:  {ada_pnl:>14,.2f} U  ({ada_pct:+.1f}%)")
+    print(f"  SOL 貢獻損益:  {sol_pnl:>14,.2f} U  ({sol_pct:+.1f}%)")
+    print(f"  ADA 貢獻損益:  {ada_pnl:>14,.2f} U  ({ada_pct:+.1f}%)")
     print(f"  合計淨利:       {total_pnl:>14,.2f} U")
 
     # ── 理論收益 vs 實際收益驗證 ─────────────────────────────
@@ -710,7 +710,7 @@ if __name__ == "__main__":
     discrepancy      = expected_capital - actual_capital
 
     print(f"\n{'='*60}")
-    print("[VERIFY] 理論收益 vs 實際收益")
+    print("[驗證] 理論收益 vs 實際收益")
     print('='*60)
     print(f"  初始資金:       {INITIAL:>14,.2f} U")
     print(f"  SOL 淨利:       {sol_pnl:>+14,.2f} U")
@@ -720,11 +720,11 @@ if __name__ == "__main__":
     print(f"  差異:           {discrepancy:>+14,.2f} U")
 
     if abs(discrepancy) > 1.0:
-        print(f"\n  ⚠️  差異超過 1 USDT，可能原因：")
+        print(f"\n  [!] 差異超過 1 USDT，可能原因：")
         print(f"      1. 費用未完全計入（進場費用在 capital 扣除但未記入 PnL）")
         print(f"      2. 還有倉位未平倉（未實現盈虧）")
     else:
-        print(f"\n  ✅ 帳務一致")
+        print(f"\n  [OK] 帳務一致")
     print('='*60)
 
     # ── 繪圖 ─────────────────────────────────────────────────

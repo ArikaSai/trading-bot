@@ -155,7 +155,7 @@ def main():
 
     df = load_data(symbol)
     combos = list(itertools.product(ENTRY_N_RANGE, TRAIL_ATR_RANGE, ATR_SL_MULT_RANGE))
-    print(f"📊 Donchian 參數掃描 | {symbol}/USDT 1H")
+    print(f"Donchian 參數掃描 | {symbol}/USDT 1H")
     print(f"   資料: {df.index[0].date()} ~ {df.index[-1].date()} ({len(df):,} 根 K 棒)")
     print(f"   固定: 風險 {FIXED['risk_pct']*100:.0f}% | 槓桿 {FIXED['leverage']}x | 初始資金 {FIXED['initial_cap']}")
     print(f"   掃描 {len(combos)} 種組合...\n")
@@ -175,7 +175,7 @@ def main():
     df_r.index += 1
 
     print(f"\n{'='*85}")
-    print(f"  Top {args.top} by Profit Factor — {symbol}/USDT 1H")
+    print(f"  前 {args.top} 名（依利潤因子排序）— {symbol}/USDT 1H")
     print(f"{'='*85}")
     print(df_r.head(args.top).to_string())
 
@@ -185,7 +185,7 @@ def main():
     df_r.index += 1
 
     print(f"\n{'='*85}")
-    print(f"  Top {args.top} by Final Capital — {symbol}/USDT 1H")
+    print(f"  前 {args.top} 名（依最終資金排序）— {symbol}/USDT 1H")
     print(f"{'='*85}")
     print(df_r.head(args.top).to_string())
 
@@ -198,7 +198,7 @@ def main():
     df_r.index += 1
 
     print(f"\n{'='*85}")
-    print(f"  Top {args.top} 綜合 (PF + MDD 排名) — {symbol}/USDT 1H")
+    print(f"  前 {args.top} 名（綜合：利潤因子 + MDD 排名）— {symbol}/USDT 1H")
     print(f"{'='*85}")
     print(df_r.drop(columns=['PF_rank', 'MDD_rank', 'Score']).head(args.top).to_string())
 

@@ -47,7 +47,7 @@ def fetch_binance_data(symbol: str, timeframe: str,
                        start_date: str = START_DATE,
                        end_date: str = END_DATE) -> pd.DataFrame:
     """從幣安下載歷史 K 線（原始 OHLCV，不含指標）。"""
-    print(f"\n[DL] {symbol} {timeframe} ({start_date} ~ {end_date})...")
+    print(f"\n[下載] {symbol} {timeframe}（{start_date} ~ {end_date}）...")
     exchange       = ccxt.binance({'enableRateLimit': True})
     since          = int(pd.Timestamp(start_date).timestamp() * 1000)
     end_timestamp  = int(pd.Timestamp(end_date).timestamp() * 1000)
@@ -64,10 +64,10 @@ def fetch_binance_data(symbol: str, timeframe: str,
             print(f"  -> {current_date}", end='\r')
             time.sleep(0.1)
         except Exception as e:
-            print(f"\n  [ERR] {e} - retry in 5s...")
+            print(f"\n  [錯誤] {e} - 5 秒後重試...")
             time.sleep(5)
 
-    print(f"  [OK] {len(all_ohlcv)} raw bars")
+    print(f"  [OK] {len(all_ohlcv)} 筆原始資料")
 
     df = pd.DataFrame(all_ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
@@ -85,15 +85,15 @@ def download_and_save(symbol: str, timeframe: str,
     df_raw = fetch_binance_data(symbol, timeframe, start_date, end_date)
 
     # 2. 計算指標（統一使用 CoreStrategy.prepare_data）
-    print(f"  [CALC] indicators...")
+    print(f"  [計算] 技術指標...")
     df = CoreStrategy.prepare_data(df_raw)
-    print(f"  [OK] {len(df)} bars with indicators")
+    print(f"  [OK] {len(df)} 根含指標 K 棒")
 
     # 3. 儲存
     filename = Path('data') / f"{symbol.replace('/', '')}_{timeframe}.csv"
     filename.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(filename, float_format='%.4f')
-    print(f"  [SAVE] {filename}")
+    print(f"  [存檔] {filename}")
     return df
 
 
@@ -106,15 +106,15 @@ if __name__ == "__main__":
         all_symbols = [s for s in all_symbols
                        if s['symbol'].split('/')[0] in requested]
         if not all_symbols:
-            print(f"[ERR] No matching symbols for: {sys.argv[1:]}")
-            print(f"  Available: SOL, ADA")
+            print(f"[錯誤] 找不到符合的幣種: {sys.argv[1:]}")
+            print(f"  可用幣種: SOL, ADA")
             sys.exit(1)
 
-    print(f"=== Download {len(all_symbols)} symbol(s) ===")
+    print(f"=== 下載 {len(all_symbols)} 個幣種 ===")
     for s in all_symbols:
         print(f"  - {s['symbol']} {s['timeframe']}")
 
     for s in all_symbols:
         download_and_save(s['symbol'], s['timeframe'])
 
-    print(f"\n=== Done ===")
+    print(f"\n=== 完成 ===")

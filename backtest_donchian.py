@@ -14,6 +14,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
 
+plt.rcParams['font.sans-serif'] = ['Microsoft JhengHei']
+plt.rcParams['axes.unicode_minus'] = False
+
 # ── 預設參數 ─────────────────────────────────────────────────────────
 DEFAULTS = dict(
     entry_n        = 10,        # 入場通道長度
@@ -242,7 +245,7 @@ def print_stats(trades: list, equity: list, cfg: dict):
     print(f"  平均獲利:    {s['AvgWin']:,.2f}")
     print(f"  平均虧損:    {s['AvgLoss']:,.2f}")
     print(f"  盈虧比:      {s['Payoff']:.2f}")
-    print(f"  Profit Factor: {s['PF']:.2f}")
+    print(f"  利潤因子:    {s['PF']:.2f}")
     print(f"  最大回撤:    {s['MDD%']:.1f}%")
     print(f"{'='*55}")
 
@@ -279,8 +282,8 @@ def plot_equity(equity: list, symbol: str, cfg: dict):
     df_e = pd.DataFrame(equity)
     ax.plot(df_e['time'], df_e['capital'], linewidth=1)
     ax.axhline(cfg['initial_cap'], color='gray', linestyle='--', alpha=0.5)
-    ax.set_title(f"Donchian Breakout — {symbol}/USDT 1H  (N={cfg['entry_n']}, Trail ×{cfg['trail_atr']})")
-    ax.set_ylabel('Capital')
+    ax.set_title(f"Donchian 突破回測 — {symbol}/USDT 1H（N={cfg['entry_n']}, Trail x{cfg['trail_atr']}）")
+    ax.set_ylabel('資金 (USDT)')
     ax.grid(True, alpha=0.3)
     plt.tight_layout()
     plt.show()
@@ -319,7 +322,7 @@ def main():
     symbol = args.symbol.upper()
     cfg = {k: getattr(args, k) for k in defaults}
 
-    print(f"📊 Donchian Channel 回測 | {symbol}/USDT 1H")
+    print(f"Donchian 通道回測 | {symbol}/USDT 1H")
     print(f"   入場 N={cfg['entry_n']} | ATR trailing ×{cfg['trail_atr']} | TWAP 門檻 {cfg['max_trade_cap']:,.0f}")
     print(f"   風險 {cfg['risk_pct']*100:.0f}% | 槓桿 {cfg['leverage']}x | 初始資金 {cfg['initial_cap']:,}")
 

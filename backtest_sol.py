@@ -343,20 +343,20 @@ def calc_metrics(trades_df, equity_df, initial_capital):
 #  繪圖
 # ══════════════════════════════════════════════════════════════════
 
-def plot_equity_curve(equity_df, title="SOL Equity Curve", use_log_scale=False):
+def plot_equity_curve(equity_df, title="SOL 淨值曲線", use_log_scale=False):
     if equity_df.empty:
         print("淨值數據為空"); return
     plot_df = equity_df.set_index('timestamp') if 'timestamp' in equity_df.columns else equity_df
     plt.figure(figsize=(12, 5))
-    plt.plot(plot_df.index, plot_df['equity'], color="#502980", linewidth=1.2, label='Equity')
+    plt.plot(plot_df.index, plot_df['equity'], color="#502980", linewidth=1.2, label='淨值')
     if use_log_scale:
-        plt.yscale('log'); plt.ylabel('Capital (USDT) - Log')
+        plt.yscale('log'); plt.ylabel('資金 (USDT) - 對數')
         plt.grid(True, which='both', linestyle='-', alpha=0.3)
     else:
-        plt.ylabel('Capital (USDT)')
+        plt.ylabel('資金 (USDT)')
         plt.grid(True, linestyle='-', alpha=0.6)
     plt.title(title, fontsize=13, fontweight='bold')
-    plt.xlabel('Date'); plt.legend()
+    plt.xlabel('日期'); plt.legend()
     plt.gcf().autofmt_xdate(); plt.tight_layout(); plt.show()
 
 
@@ -372,33 +372,33 @@ def run_walk_forward(df, config):
     ]
     init_cap = config['risk']['initial_capital']
     print(f"\n{'='*70}")
-    print(f"Walk Forward Analysis")
+    print(f"前進分析 (Walk Forward)")
     print(f"{'='*70}")
 
     for p in periods:
         print(f"\n  [{p['name']}]")
         try:
             df_test = df.loc[p['test'][0]:p['test'][1]]
-            if len(df_test) == 0: print("    test: no data"); continue
+            if len(df_test) == 0: print("    訓練: 無資料"); continue
             t, e, _ = run_backtest(df_test, config)
             m = calc_metrics(t, e, init_cap)
-            print(f"    test {p['test'][0]}~{p['test'][1]}: Return {m['Return_%']}% | MDD {m['True_MDD_%']}%")
+            print(f"    訓練 {p['test'][0]}~{p['test'][1]}: 報酬 {m['Return_%']}% | MDD {m['True_MDD_%']}%")
 
             df_val = df.loc[p['val'][0]:p['val'][1]]
-            if len(df_val) == 0: print("    val: no data"); continue
+            if len(df_val) == 0: print("    驗證: 無資料"); continue
             tv, ev, _ = run_backtest(df_val, config)
             mv = calc_metrics(tv, ev, init_cap)
-            print(f"    val  {p['val'][0]}~{p['val'][1]}: Return {mv['Return_%']}% | MDD {mv['True_MDD_%']}% | "
-                  f"WinRate {mv['Win_Rate_%']}% | Sharpe {mv['Sharpe']} | MaxConsecLoss {mv['Max_Consecutive_Losses']}")
+            print(f"    驗證 {p['val'][0]}~{p['val'][1]}: 報酬 {mv['Return_%']}% | MDD {mv['True_MDD_%']}% | "
+                  f"勝率 {mv['Win_Rate_%']}% | Sharpe {mv['Sharpe']} | 最大連虧 {mv['Max_Consecutive_Losses']}")
         except Exception as e:
-            print(f"    error: {e}")
+            print(f"    錯誤: {e}")
 
 
 # ══════════════════════════════════════════════════════════════════
 #  壓力測試
 # ══════════════════════════════════════════════════════════════════
 
-def run_stress_test(df, config, start_date, end_date, label="Stress Test"):
+def run_stress_test(df, config, start_date, end_date, label="壓力測試"):
     init_cap = config['risk']['initial_capital']
     df_clean = filter_date_range(df, start_date, end_date)
     t, e, _ = run_backtest(df_clean, config)
@@ -407,15 +407,15 @@ def run_stress_test(df, config, start_date, end_date, label="Stress Test"):
     print(f"\n{'='*70}")
     print(f"  [{label}] {start_date} ~ {end_date}")
     print(f"{'='*70}")
-    print(f"  Return:       {m['Return_%']}%")
-    print(f"  MDD:          {m['True_MDD_%']}%")
+    print(f"  報酬率:       {m['Return_%']}%")
+    print(f"  最大回撤:     {m['True_MDD_%']}%")
     print(f"  Sharpe:       {m['Sharpe']}")
-    print(f"  Win Rate:     {m['Win_Rate_%']}%")
-    print(f"  Avg R:        {m['Avg_R']}")
-    print(f"  Max ConsecL:  {m['Max_Consecutive_Losses']}")
-    print(f"  Worst Trade:  {m['Worst_Trade_USDT']} U ({m['Worst_Trade_%']}%)")
-    print(f"  Trades:       {m['Total_Trades']}")
-    print(f"  Final Cap:    {m['Final_Cap']} U")
+    print(f"  勝率:         {m['Win_Rate_%']}%")
+    print(f"  平均 R:       {m['Avg_R']}")
+    print(f"  最大連虧:     {m['Max_Consecutive_Losses']}")
+    print(f"  最差單筆:     {m['Worst_Trade_USDT']} U ({m['Worst_Trade_%']}%)")
+    print(f"  交易次數:     {m['Total_Trades']}")
+    print(f"  最終資金:     {m['Final_Cap']} U")
     print(f"{'='*70}")
 
     plot_equity_curve(e, title=f"{label}: {start_date} ~ {end_date}", use_log_scale=True)
@@ -426,19 +426,21 @@ def run_stress_test(df, config, start_date, end_date, label="Stress Test"):
 #  逐筆明細列印
 # ══════════════════════════════════════════════════════════════════
 
-def print_trade_details(trades_df):
+def print_trade_details(trades_df, last_n=100):
     if trades_df.empty:
-        print("  no trades"); return
+        print("  無交易紀錄"); return
+    total = len(trades_df)
+    show_df = trades_df.tail(last_n)
     print(f"\n{'='*90}")
-    print(f"  Trade Details ({len(trades_df)} trades)")
+    print(f"  交易明細（最後 {len(show_df)} 筆 / 共 {total} 筆）")
     print(f"{'='*90}")
-    print(f"  {'#':>3}  {'Side':<5}  {'Entry Time':<18}  {'Exit Time':<18}  "
-          f"{'Entry':>8}  {'Exit':>8}  {'Size':>10}  {'PnL(U)':>10}  {'Reason'}")
+    print(f"  {'#':>3}  {'方向':<5}  {'進場時間':<18}  {'出場時間':<18}  "
+          f"{'進場價':>8}  {'出場價':>8}  {'數量':>10}  {'損益(U)':>10}  {'原因'}")
     print(f"  {'-'*86}")
-    for i, t in trades_df.iterrows():
+    for i, t in show_df.iterrows():
         entry_ts = pd.Timestamp(t['Entry_Time']).strftime('%m/%d %H:%M')
         exit_ts  = pd.Timestamp(t['Exit_Time']).strftime('%m/%d %H:%M')
-        side     = 'Long' if t['Type'] == 'Long' else 'Short'
+        side     = '多' if t['Type'] == 'Long' else '空'
         pnl_icon = 'W' if t['PnL'] > 0 else 'L'
         ep = t.get('Entry_Price', 0)
         xp = t.get('Exit_Price', 0)
@@ -449,7 +451,7 @@ def print_trade_details(trades_df):
     print(f"  {'-'*86}")
     wins   = trades_df[trades_df['PnL'] > 0]['PnL'].sum()
     losses = trades_df[trades_df['PnL'] <= 0]['PnL'].sum()
-    print(f"  Total Win: {wins:+.2f} U | Total Loss: {losses:+.2f} U | Net: {wins+losses:+.2f} U")
+    print(f"  總獲利: {wins:+.2f} U | 總虧損: {losses:+.2f} U | 淨損益: {wins+losses:+.2f} U")
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -471,7 +473,7 @@ if __name__ == "__main__":
     df = df.iloc[:-1]
     df = CoreStrategy.prepare_data(df)
     df = df[(df.index >= pd.Timestamp(START)) & (df.index <= pd.Timestamp(END))]
-    print(f"[OK] {len(df)} bars ({START} ~ {END})")
+    print(f"[OK] {len(df)} 根 K 棒 ({START} ~ {END})")
 
     # ── 自適應 TWAP ──────────────────────────────────────────
     trades_a, equity_a, _ = run_backtest(df, config)
@@ -486,25 +488,25 @@ if __name__ == "__main__":
     m_wk = calc_metrics(trades_wk, equity_wk, INITIAL)
     total_wealth_wk = m_wk['Final_Cap'] + total_withdrawn_wk
 
-    print(f"\n-- Weekly Withdrawal {WEEKLY_WITHDRAWAL_PCT*100:.1f}% cap {WEEKLY_WITHDRAWAL_AMOUNT:,.0f} U (threshold {WEEKLY_WITHDRAWAL_START:,.0f} U)")
-    print(f"  Return:    {m_wk['Return_%']}%")
-    print(f"  MDD:       {m_wk['True_MDD_%']}%")
+    print(f"\n-- 每週提現 {WEEKLY_WITHDRAWAL_PCT*100:.1f}% 上限 {WEEKLY_WITHDRAWAL_AMOUNT:,.0f} U（門檻 {WEEKLY_WITHDRAWAL_START:,.0f} U）")
+    print(f"  報酬率:    {m_wk['Return_%']}%")
+    print(f"  最大回撤:  {m_wk['True_MDD_%']}%")
     print(f"  Sharpe:    {m_wk['Sharpe']}")
-    print(f"  Win Rate:  {m_wk['Win_Rate_%']}%")
-    print(f"  Avg R:     {m_wk['Avg_R']}")
-    print(f"  Trades:    {m_wk['Total_Trades']}")
-    print(f"  Balance:   {m_wk['Final_Cap']:,.2f} U")
-    print(f"  Withdrawn: {total_withdrawn_wk:,.2f} U")
-    print(f"  Wealth:    {total_wealth_wk:,.2f} U (initial {INITIAL} U)")
+    print(f"  勝率:      {m_wk['Win_Rate_%']}%")
+    print(f"  平均 R:    {m_wk['Avg_R']}")
+    print(f"  交易次數:  {m_wk['Total_Trades']}")
+    print(f"  帳戶餘額:  {m_wk['Final_Cap']:,.2f} U")
+    print(f"  已提現:    {total_withdrawn_wk:,.2f} U")
+    print(f"  總財富:    {total_wealth_wk:,.2f} U（初始 {INITIAL} U）")
 
-    print(f"\n-- Adaptive TWAP (N x {config['risk'].get('max_trade_usdt_cap',200000):.0f} U)")
-    print(f"  Return:    {m_a['Return_%']}%")
-    print(f"  MDD:       {m_a['True_MDD_%']}%")
+    print(f"\n-- 自適應 TWAP（N x {config['risk'].get('max_trade_usdt_cap',200000):.0f} U）")
+    print(f"  報酬率:    {m_a['Return_%']}%")
+    print(f"  最大回撤:  {m_a['True_MDD_%']}%")
     print(f"  Sharpe:    {m_a['Sharpe']}")
-    print(f"  Win Rate:  {m_a['Win_Rate_%']}%")
-    print(f"  Avg R:     {m_a['Avg_R']}")
-    print(f"  Trades:    {m_a['Total_Trades']}")
-    print(f"  Final Cap: {m_a['Final_Cap']:,.2f} U (initial {INITIAL} U)")
+    print(f"  勝率:      {m_a['Win_Rate_%']}%")
+    print(f"  平均 R:    {m_a['Avg_R']}")
+    print(f"  交易次數:  {m_a['Total_Trades']}")
+    print(f"  最終資金:  {m_a['Final_Cap']:,.2f} U（初始 {INITIAL} U）")
 
     # ── 逐筆明細 ─────────────────────────────────────────────
     print_trade_details(trades_a)
@@ -522,11 +524,11 @@ if __name__ == "__main__":
         multiple *= 2
 
     if milestones:
-        print(f"\n  Milestones:")
+        print(f"\n  翻倍里程碑:")
         for ts, cap, mult in milestones:
             print(f"    x{mult:>6}  {cap:>14.2f} U  @  {ts.strftime('%Y-%m-%d %H:%M')}")
     else:
-        print(f"\n  No doubling milestone in this period")
+        print(f"\n  此區間無翻倍里程碑")
 
     # ── 淨值曲線 ─────────────────────────────────────────────
     eq_wk = equity_wk.set_index('timestamp')['equity']
@@ -534,9 +536,9 @@ if __name__ == "__main__":
 
     fig, ax = plt.subplots(figsize=(12, 5))
     ax.plot(eq_wk.index, eq_wk.values, color='#e74c3c', linewidth=1.0,
-            label=f'Weekly Withdrawal {WEEKLY_WITHDRAWAL_PCT*100:.1f}% cap {WEEKLY_WITHDRAWAL_AMOUNT:,.0f} U')
-    ax.plot(eq_a.index, eq_a.values, color='#1abc9c', linewidth=1.2, label='Adaptive TWAP')
-    ax.axhline(INITIAL, color='gray', linewidth=0.8, label=f'Initial {INITIAL} U')
+            label=f'每週提現 {WEEKLY_WITHDRAWAL_PCT*100:.1f}% 上限 {WEEKLY_WITHDRAWAL_AMOUNT:,.0f} U')
+    ax.plot(eq_a.index, eq_a.values, color='#1abc9c', linewidth=1.2, label='自適應 TWAP')
+    ax.axhline(INITIAL, color='gray', linewidth=0.8, label=f'初始 {INITIAL} U')
 
     colors = ['#2ecc71', '#f39c12', '#e74c3c', '#3498db', '#9b59b6']
     for i, (ts, cap, mult) in enumerate(milestones):
@@ -547,7 +549,7 @@ if __name__ == "__main__":
                     xy=(ts, cap), xytext=(8, 4), textcoords='offset points',
                     fontsize=8, color=c)
 
-    ax.set_title(f'SOL Equity Curve  {START} ~ {END}', fontsize=13, fontweight='bold')
-    ax.set_xlabel('Date'); ax.set_ylabel('Capital (USDT)')
+    ax.set_title(f'SOL 淨值曲線  {START} ~ {END}', fontsize=13, fontweight='bold')
+    ax.set_xlabel('日期'); ax.set_ylabel('資金 (USDT)')
     ax.legend(); ax.grid(True, alpha=0.4)
     fig.autofmt_xdate(); plt.tight_layout(); plt.show()
