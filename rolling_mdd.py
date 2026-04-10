@@ -1,107 +1,164 @@
 """
 rolling_mdd.py
 ══════════════
-每月滾動回測（回測半年），找出 MDD 最大的時段。
+三策略聯合滾動回測 — 每月滾動，找出歷史最差區間
+
+用法:
+    python rolling_mdd.py                  # 預設 3 個月窗口
+    python rolling_mdd.py --window 6       # 6 個月窗口
 """
 
+import argparse
+import json
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-from backtest_sol import load_config, run_backtest, calc_metrics
-from strategy import CoreStrategy
+from pathlib import Path
+from backtest_triple import load_csv, run_triple
 
 plt.rcParams['font.sans-serif'] = ['Microsoft JhengHei']
 plt.rcParams['axes.unicode_minus'] = False
 
-WINDOW_MONTHS = 3   # 每次回測幾個月
-INITIAL = None       # 從 config 讀取
 
-config  = load_config("config.json")
-INITIAL = config['risk']['initial_capital']
+def load_config(path="config.json") -> dict:
+    with open(path, 'r', encoding='utf-8') as f:
+        return json.load(f)
 
-# 載入資料
-df = pd.read_csv("data/SOLUSDT_15m.csv", index_col='timestamp', parse_dates=True)
-df = df.iloc[:-1]
-df = CoreStrategy.prepare_data(df)
 
-# 建立滾動窗口：每月 1 號開始，往後推 6 個月
-first_date = df.index[0]
-last_date  = df.index[-1]
+def main():
+    parser = argparse.ArgumentParser(description='三策略聯合滾動 MDD')
+    parser.add_argument('--window', type=int, default=3, help='滾動窗口（月）')
+    parser.add_argument('--scheme', default='B', choices=['A', 'B'],
+                        help='保證金方案: A=50/25/12.5, B=40/20/10')
+    args = parser.parse_args()
 
-# 產生所有可能的起始月份
-starts = pd.date_range(
-    start=first_date.replace(day=1),
-    end=last_date - pd.DateOffset(months=WINDOW_MONTHS),
-    freq='MS'   # Month Start
-)
+    WINDOW = args.window
+    if args.scheme == 'A':
+        margin = {'SOL': 0.50, 'ADA': 0.25, 'XRP': 0.125}
+        scheme_label = '50/25/12.5'
+    else:
+        margin = {'SOL': 0.40, 'ADA': 0.20, 'XRP': 0.10}
+        scheme_label = '40/20/10'
 
-print(f"[OK] {len(df)} 根 K 棒 | {first_date.strftime('%Y-%m-%d')} ~ {last_date.strftime('%Y-%m-%d')}")
-print(f"[執行] {len(starts)} 個滾動窗口（每窗 {WINDOW_MONTHS} 個月）\n")
+    config = load_config()
+    initial_cap = config['risk']['initial_capital']
 
-results = []
-for s in starts:
-    e = s + pd.DateOffset(months=WINDOW_MONTHS)
-    df_slice = df[(df.index >= s) & (df.index < e)]
-    if len(df_slice) < 100:
-        continue
+    # 載入資料取得時間範圍
+    sol_tf = config['trading'].get('timeframe', '15m')
+    df_sol = load_csv('SOL', sol_tf)
+    first_date = df_sol.index[0]
+    last_date  = df_sol.index[-1]
 
-    trades, equity, _ = run_backtest(df_slice, config)
-    m = calc_metrics(trades, equity, INITIAL)
+    # 產生滾動窗口起始日
+    starts = pd.date_range(
+        start=first_date.replace(day=1),
+        end=last_date - pd.DateOffset(months=WINDOW),
+        freq='MS'
+    )
 
-    results.append({
-        'Start':      s.strftime('%Y-%m-%d'),
-        'End':        e.strftime('%Y-%m-%d'),
-        'Bars':       len(df_slice),
-        'Trades':     m['Total_Trades'],
-        'Return_%':   m['Return_%'],
-        'MDD_%':      m['True_MDD_%'],
-        'Sharpe':     m['Sharpe'],
-        'Win_Rate_%': m['Win_Rate_%'],
-        'Final_Cap':  m['Final_Cap'],
-    })
+    print(f"三策略聯合滾動 MDD")
+    print(f"  方案: {scheme_label} | 窗口: {WINDOW} 個月")
+    print(f"  期間: {first_date.strftime('%Y-%m-%d')} ~ {last_date.strftime('%Y-%m-%d')}")
+    print(f"  槓桿: {config['risk'].get('leverage', 2)}x | 初始: ${initial_cap}")
+    print(f"  共 {len(starts)} 個滾動窗口\n")
 
-rdf = pd.DataFrame(results)
+    results = []
+    for j, s in enumerate(starts, 1):
+        e = s + pd.DateOffset(months=WINDOW)
 
-# 排序：MDD 最差排最前
-rdf_sorted = rdf.sort_values('MDD_%').reset_index(drop=True)
+        # 臨時修改 config 的回測日期
+        cfg = json.loads(json.dumps(config))
+        cfg['backtest'] = {
+            'start_date': s.strftime('%Y-%m-%d'),
+            'end_date':   e.strftime('%Y-%m-%d'),
+        }
 
-print(f"{'#':>3}  {'起始':<12} {'結束':<12} {'交易數':>6} {'報酬%':>9} {'MDD%':>8} {'Sharpe':>7} {'勝率%':>6}")
-print("-" * 72)
-for i, r in rdf_sorted.iterrows():
-    print(f"{i+1:>3}  {r['Start']:<12} {r['End']:<12} {r['Trades']:>6} "
-          f"{r['Return_%']:>+8.1f}% {r['MDD_%']:>+7.1f}% {r['Sharpe']:>7.3f} {r['Win_Rate_%']:>5.1f}%")
+        try:
+            r = run_triple(cfg, margin, label=f"{s.strftime('%Y-%m')} ~ {e.strftime('%Y-%m')}")
+        except Exception as ex:
+            print(f"  [{j}/{len(starts)}] {s.strftime('%Y-%m')} 跳過: {ex}")
+            continue
 
-print(f"\n{'='*72}")
-print(f"MDD 最差時段: {rdf_sorted.iloc[0]['Start']} ~ {rdf_sorted.iloc[0]['End']} | MDD: {rdf_sorted.iloc[0]['MDD_%']}%")
-print(f"MDD 最佳時段: {rdf_sorted.iloc[-1]['Start']} ~ {rdf_sorted.iloc[-1]['End']} | MDD: {rdf_sorted.iloc[-1]['MDD_%']}%")
+        results.append({
+            'Start':     s.strftime('%Y-%m-%d'),
+            'End':       e.strftime('%Y-%m-%d'),
+            'Trades':    r['all_n'],
+            'Return_%':  round(r['ret%'], 1),
+            'MDD_%':     round(r['mdd%'], 1),
+            'Sharpe':    round(r['sharpe'], 3),
+            'PF':        round(r['all_pf'], 2),
+            'Final':     round(r['final'], 2),
+            'SOL_n':     r['sol_n'],
+            'ADA_n':     r['ada_n'],
+            'XRP_n':     r['xrp_n'],
+        })
 
-# 統計
-print(f"\n{'='*72}")
-print(f"[統計] {len(rdf)} 個窗口")
-print(f"  MDD  平均: {rdf['MDD_%'].mean():.2f}% | 中位: {rdf['MDD_%'].median():.2f}% | 最差: {rdf['MDD_%'].min():.2f}%")
-print(f"  收益 平均: {rdf['Return_%'].mean():.1f}% | 中位: {rdf['Return_%'].median():.1f}%")
-print(f"  虧損窗口數: {(rdf['Return_%'] < 0).sum()} / {len(rdf)}")
+        if j % 5 == 0 or j == len(starts):
+            print(f"  進度: {j}/{len(starts)}")
 
-# 繪圖
-fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 8), sharex=True)
+    if not results:
+        print("沒有有效窗口")
+        return
 
-x_dates = pd.to_datetime(rdf['Start'])
-colors  = ['#e74c3c' if m < -30 else '#f39c12' if m < -15 else '#2ecc71' for m in rdf['MDD_%']]
+    rdf = pd.DataFrame(results)
 
-ax1.bar(x_dates, rdf['MDD_%'].values, width=25, color=colors, alpha=0.8)
-ax1.axhline(rdf['MDD_%'].mean(), color='gray', linestyle='--', linewidth=0.8, label=f"平均 {rdf['MDD_%'].mean():.1f}%")
-ax1.set_ylabel('最大回撤 %')
-ax1.set_title(f'SOL {WINDOW_MONTHS}M 滾動 MDD（紅 < -30%, 橘 < -15%, 綠 > -15%）', fontweight='bold')
-ax1.legend()
-ax1.grid(True, alpha=0.3)
+    # ── 排序：MDD 最差 → 最前 ────────────────────────────────
+    rdf_sorted = rdf.sort_values('MDD_%').reset_index(drop=True)
 
-ax2.bar(x_dates, rdf['Return_%'].values, width=25,
-        color=['#2ecc71' if r > 0 else '#e74c3c' for r in rdf['Return_%']], alpha=0.8)
-ax2.axhline(0, color='black', linewidth=0.5)
-ax2.set_ylabel('報酬率 %')
-ax2.set_title(f'SOL {WINDOW_MONTHS}M 滾動報酬', fontweight='bold')
-ax2.grid(True, alpha=0.3)
+    print(f"\n{'='*90}")
+    print(f"  滾動 MDD 排名（{WINDOW} 個月窗口，方案 {scheme_label}）")
+    print(f"{'='*90}")
+    print(f"{'#':>3}  {'起始':<12} {'結束':<12} {'交易':>5} {'報酬%':>9} {'MDD%':>8} {'PF':>6} {'Sharpe':>7}")
+    print("-" * 75)
+    for i, r in rdf_sorted.iterrows():
+        tag = ' [!]' if r['MDD_%'] < -30 else ''
+        print(f"{i+1:>3}  {r['Start']:<12} {r['End']:<12} {r['Trades']:>5} "
+              f"{r['Return_%']:>+8.1f}% {r['MDD_%']:>+7.1f}% {r['PF']:>5.2f} {r['Sharpe']:>7.3f}{tag}")
 
-fig.autofmt_xdate()
-plt.tight_layout()
-plt.show()
+    # ── 統計摘要 ─────────────────────────────────────────────
+    print(f"\n{'='*90}")
+    print(f"  統計摘要 — {len(rdf)} 個窗口")
+    print(f"{'='*90}")
+    print(f"  MDD   平均: {rdf['MDD_%'].mean():.1f}% | 中位: {rdf['MDD_%'].median():.1f}% | 最差: {rdf['MDD_%'].min():.1f}%")
+    print(f"  報酬  平均: {rdf['Return_%'].mean():.1f}% | 中位: {rdf['Return_%'].median():.1f}%")
+    print(f"  PF    平均: {rdf['PF'].mean():.2f} | 中位: {rdf['PF'].median():.2f}")
+    n_loss = (rdf['Return_%'] < 0).sum()
+    print(f"  虧損窗口: {n_loss} / {len(rdf)} ({n_loss/len(rdf)*100:.1f}%)")
+
+    worst = rdf_sorted.iloc[0]
+    best  = rdf_sorted.iloc[-1]
+    print(f"\n  最差時段: {worst['Start']} ~ {worst['End']} | MDD: {worst['MDD_%']}% | 報酬: {worst['Return_%']}%")
+    print(f"  最佳時段: {best['Start']} ~ {best['End']} | MDD: {best['MDD_%']}% | 報酬: {best['Return_%']}%")
+
+    # ── 繪圖 ─────────────────────────────────────────────────
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(16, 9), sharex=True)
+
+    x_dates = pd.to_datetime(rdf['Start'])
+    mdd_colors = ['#e74c3c' if m < -30 else '#f39c12' if m < -15 else '#2ecc71'
+                  for m in rdf['MDD_%']]
+
+    ax1.bar(x_dates, rdf['MDD_%'].values, width=25, color=mdd_colors, alpha=0.8)
+    ax1.axhline(rdf['MDD_%'].mean(), color='gray', linestyle='--', linewidth=0.8,
+                label=f"平均 {rdf['MDD_%'].mean():.1f}%")
+    ax1.axhline(-40, color='red', linestyle=':', linewidth=1, label='警戒線 -40%')
+    ax1.set_ylabel('最大回撤 %')
+    ax1.set_title(f'三策略聯合 {WINDOW}M 滾動 MDD（方案 {scheme_label}）', fontsize=13, fontweight='bold')
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+
+    ret_colors = ['#2ecc71' if r > 0 else '#e74c3c' for r in rdf['Return_%']]
+    ax2.bar(x_dates, rdf['Return_%'].values, width=25, color=ret_colors, alpha=0.8)
+    ax2.axhline(0, color='black', linewidth=0.5)
+    ax2.set_ylabel('報酬率 %')
+    ax2.set_title(f'三策略聯合 {WINDOW}M 滾動報酬', fontsize=13, fontweight='bold')
+    ax2.grid(True, alpha=0.3)
+
+    fig.autofmt_xdate()
+    plt.tight_layout()
+    plt.savefig('triple_rolling_mdd.png', dpi=150)
+    plt.show()
+    print(f"\n  圖表已儲存: triple_rolling_mdd.png")
+
+
+if __name__ == '__main__':
+    main()

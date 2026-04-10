@@ -3,3 +3,4 @@ order_state_dual.json
 __pycache__/
 *.pyc
 data/
+*.png
