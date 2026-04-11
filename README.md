@@ -27,11 +27,8 @@
 | 檔案 | 說明 |
 |------|------|
 | `backtest_triple.py` | 三策略聯合回測主引擎：共享資金池，支援 `--scheme` 切換保證金方案（tier/free_a/free_b/all）並產生比較圖表 |
-| `backtest_sol.py` | SOL 單策略回測：自適應 TWAP、每週提現模擬、前進分析、壓力測試、逐筆明細 |
-| `backtest_donchian.py` | Donchian Channel 通用回測：支援任意幣種，CLI 參數覆蓋 |
 | `backtest_squeeze.py` | BB Squeeze 波動率壓縮爆發策略回測：布林帶縮進 Keltner Channel 時壓縮、釋放時進場，ATR Trailing Stop 出場 |
 | `rolling_mdd.py` | 三策略滾動回測：按月滾動窗口評估最差區間 MDD，輸出排序統計與圖表 |
-| `donchian_sweep.py` | Donchian Channel 參數掃描：網格搜索最佳 entry_n / trail_atr / atr_sl_mult 組合 |
 | `squeeze_sweep.py` | BB Squeeze 參數掃描：掃描 kc_period / kc_mult / trail_atr / bb_std 共 300 組合，含高原分析與跨幣種測試 |
 
 ### 工具
