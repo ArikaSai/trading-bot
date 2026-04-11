@@ -28,17 +28,10 @@ def load_config(path="config.json") -> dict:
 def main():
     parser = argparse.ArgumentParser(description='三策略聯合滾動 MDD')
     parser.add_argument('--window', type=int, default=3, help='滾動窗口（月）')
-    parser.add_argument('--scheme', default='B', choices=['A', 'B'],
-                        help='保證金方案: A=50/25/12.5, B=40/20/10')
     args = parser.parse_args()
 
     WINDOW = args.window
-    if args.scheme == 'A':
-        margin = {'SOL': 0.50, 'ADA': 0.25, 'XRP': 0.125}
-        scheme_label = '50/25/12.5'
-    else:
-        margin = {'SOL': 0.40, 'ADA': 0.20, 'XRP': 0.10}
-        scheme_label = '40/20/10'
+    scheme_label = '先到先得 40/20/10'
 
     config = load_config()
     initial_cap = config['risk']['initial_capital']
@@ -74,7 +67,7 @@ def main():
         }
 
         try:
-            r = run_triple(cfg, margin, label=f"{s.strftime('%Y-%m')} ~ {e.strftime('%Y-%m')}")
+            r = run_triple(cfg, label=f"{s.strftime('%Y-%m')} ~ {e.strftime('%Y-%m')}")
         except Exception as ex:
             print(f"  [{j}/{len(starts)}] {s.strftime('%Y-%m')} 跳過: {ex}")
             continue
