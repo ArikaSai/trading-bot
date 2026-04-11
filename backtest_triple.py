@@ -43,11 +43,10 @@ def load_csv(symbol: str, timeframe: str) -> pd.DataFrame:
     return df
 
 
-def run_triple(config, margin_scheme: dict, label: str = ""):
-    """
-    margin_scheme: {'SOL': 0.50, 'ADA': 0.25, 'XRP': 0.125}
-    每個值代表該策略最多可用多少比例的總資金作為保證金
-    """
+_MARGIN_TIERS = [0.40, 0.20, 0.10]   # 先到先得：第1/2/3個進場的策略分別拿 40/20/10%
+
+
+def run_triple(config, label: str = ""):
     # ── 載入資料 ─────────────────────────────────────────────
     sol_tf = config['trading'].get('timeframe', '15m')
     df_sol = load_csv('SOL', sol_tf)
@@ -101,10 +100,7 @@ def run_triple(config, margin_scheme: dict, label: str = ""):
     xrp_max_loss  = xrp_cfg.get('max_consec_losses', 3)
     xrp_fee       = fee_rate
 
-    # 保證金上限
-    sol_margin_cap = margin_scheme['SOL']
-    ada_margin_cap = margin_scheme['ADA']
-    xrp_margin_cap = margin_scheme['XRP']
+    # 保證金 tier（先到先得，進場時動態決定）
 
     # ── 建立統一時間軸 ───────────────────────────────────────
     all_ts = sorted(set(list(df_sol.index) + list(df_ada.index) + list(df_xrp.index)))
@@ -203,10 +199,11 @@ def run_triple(config, margin_scheme: dict, label: str = ""):
 
             # ── 進場執行（上一根產生信號，本根開盤執行）──────
             if sol_pos == 0 and (sol_long_sig or sol_short_sig):
-                # 保證金限制
+                # 先到先得：依目前其他策略持倉數決定保證金 tier
+                _open_count = (ada_pos != 0) + (xrp_pos != 0)
                 other_margin = ada_margin_used + xrp_margin_used
                 avail = capital - other_margin
-                max_margin = capital * sol_margin_cap
+                max_margin = capital * _MARGIN_TIERS[_open_count]
 
                 sl_dist = sol_saved_sl_dist if sol_saved_sl_dist > 0 else max(sol_sl_atr * cur_atr, cur_open * 0.001)
                 sol_saved_sl_dist = 0.0
@@ -307,7 +304,7 @@ def run_triple(config, margin_scheme: dict, label: str = ""):
                 else:
                     capital += pnl
                 net_pnl = pnl - sol_entry_fee
-                sol_trades.append({'Time': ts, 'Strategy': 'SOL', 'PnL': net_pnl})
+                sol_trades.append({'Time': ts, 'Strategy': 'SOL', 'PnL': net_pnl, 'Cap': capital})
                 sol_entry_fee    = 0.0
                 sol_pos          = 0
                 sol_be_activated = False
@@ -427,7 +424,7 @@ def run_triple(config, margin_scheme: dict, label: str = ""):
                     x_fee = xp * ada_size * ada_fee
                     net   = gross - ada_entry_fee - x_fee
                     capital += gross - x_fee
-                    ada_trades.append({'Time': ts, 'Strategy': 'ADA', 'PnL': net})
+                    ada_trades.append({'Time': ts, 'Strategy': 'ADA', 'PnL': net, 'Cap': capital})
                     ada_pos = 0; ada_size = 0.0; ada_entry_fee = 0.0
                     ada_margin_used = 0.0
                     ada_twap_active = False; ada_twap_remaining = 0; ada_twap_pending = False
@@ -452,9 +449,10 @@ def run_triple(config, margin_scheme: dict, label: str = ""):
                     direction = 1 if a_C > dc_high else -1
                     risk_per_unit = ada_sl_mult * a_atr
                     if risk_per_unit > 0:
+                        _open_count = (sol_pos != 0) + (xrp_pos != 0)
                         other_margin = sol_margin_used + xrp_margin_used
                         available = capital - other_margin
-                        max_margin = capital * ada_margin_cap
+                        max_margin = capital * _MARGIN_TIERS[_open_count]
                         if available > 10:
                             N = max(1, int(available / ada_max_cap))
                             if N == 1:
@@ -535,7 +533,7 @@ def run_triple(config, margin_scheme: dict, label: str = ""):
                     x_fee = xp * xrp_size * xrp_fee
                     net   = gross - xrp_entry_fee - x_fee
                     capital += gross - x_fee
-                    xrp_trades.append({'Time': ts, 'Strategy': 'XRP', 'PnL': net})
+                    xrp_trades.append({'Time': ts, 'Strategy': 'XRP', 'PnL': net, 'Cap': capital})
                     xrp_pos = 0; xrp_size = 0.0; xrp_entry_fee = 0.0
                     xrp_margin_used = 0.0
                     xrp_twap_active = False; xrp_twap_remaining = 0; xrp_twap_pending = False
@@ -548,9 +546,13 @@ def run_triple(config, margin_scheme: dict, label: str = ""):
 
             # ── XRP 入場訊號：Fib 回撤 ──────────────────────
             if xrp_pos == 0 and not xrp_twap_active and xi >= xrp_swing_n and x_atr > 0:
-                swing_high = np.max(xrp_highs[xi - xrp_swing_n:xi])
-                swing_low  = np.min(xrp_lows[xi - xrp_swing_n:xi])
+                _win_xh     = xrp_highs[xi - xrp_swing_n:xi]
+                _win_xl     = xrp_lows[xi - xrp_swing_n:xi]
+                swing_high  = np.max(_win_xh)
+                swing_low   = np.min(_win_xl)
                 swing_range = swing_high - swing_low
+                _xhi_idx    = int(np.argmax(_win_xh))
+                _xlo_idx    = int(np.argmin(_win_xl))
 
                 direction = 0
                 if swing_range > 0:
@@ -558,12 +560,12 @@ def run_triple(config, margin_scheme: dict, label: str = ""):
                     prev_L = xrp_lows[xi - 1]
                     prev_H = xrp_highs[xi - 1]
 
-                    if x_C > x_ema:
+                    if x_C > x_ema and _xhi_idx > _xlo_idx:
                         fib_price = swing_high - xrp_fib_level * swing_range
                         tol = fib_price * xrp_fib_tol
                         if prev_L <= fib_price + tol and prev_C > fib_price:
                             direction = 1
-                    elif x_C < x_ema:
+                    elif x_C < x_ema and _xlo_idx > _xhi_idx:
                         fib_price = swing_low + xrp_fib_level * swing_range
                         tol = fib_price * xrp_fib_tol
                         if prev_H >= fib_price - tol and prev_C < fib_price:
@@ -580,9 +582,10 @@ def run_triple(config, margin_scheme: dict, label: str = ""):
                 elif has_sig:
                     risk_per_unit = xrp_sl_mult * x_atr
                     if risk_per_unit > 0:
+                        _open_count = (sol_pos != 0) + (ada_pos != 0)
                         other_margin = sol_margin_used + ada_margin_used
                         available = capital - other_margin
-                        max_margin = capital * xrp_margin_cap
+                        max_margin = capital * _MARGIN_TIERS[_open_count]
                         if available > 10:
                             N = max(1, int(available / xrp_max_cap))
                             if N == 1:
@@ -633,7 +636,7 @@ def run_triple(config, margin_scheme: dict, label: str = ""):
         pnl = (xp - sol_entry) * sol_size * sol_pos - xp * sol_size * sol_fee
         net = pnl - sol_entry_fee
         capital += pnl
-        sol_trades.append({'Time': df_sol.index[-1], 'Strategy': 'SOL', 'PnL': net})
+        sol_trades.append({'Time': df_sol.index[-1], 'Strategy': 'SOL', 'PnL': net, 'Cap': capital})
 
     if ada_pos != 0:
         ac = df_ada['close'].iloc[-1]
@@ -642,7 +645,7 @@ def run_triple(config, margin_scheme: dict, label: str = ""):
         x_fee = xp * ada_size * ada_fee
         net = gross - ada_entry_fee - x_fee
         capital += gross - x_fee
-        ada_trades.append({'Time': df_ada.index[-1], 'Strategy': 'ADA', 'PnL': net})
+        ada_trades.append({'Time': df_ada.index[-1], 'Strategy': 'ADA', 'PnL': net, 'Cap': capital})
 
     if xrp_pos != 0:
         xc = df_xrp['close'].iloc[-1]
@@ -651,26 +654,28 @@ def run_triple(config, margin_scheme: dict, label: str = ""):
         x_fee = xp * xrp_size * xrp_fee
         net = gross - xrp_entry_fee - x_fee
         capital += gross - x_fee
-        xrp_trades.append({'Time': df_xrp.index[-1], 'Strategy': 'XRP', 'PnL': net})
+        xrp_trades.append({'Time': df_xrp.index[-1], 'Strategy': 'XRP', 'PnL': net, 'Cap': capital})
 
     # ── 統計 ─────────────────────────────────────────────────
     eq_df = pd.DataFrame(equity_curve)
 
     def _stats(trades):
         if not trades:
-            return 0, 0.0, 0.0, 0.0
-        wins = [t['PnL'] for t in trades if t['PnL'] > 0]
+            return 0, 0.0, 0.0, 0.0, 0.0, 0.0
+        wins   = [t['PnL'] for t in trades if t['PnL'] > 0]
         losses = [t['PnL'] for t in trades if t['PnL'] <= 0]
-        total = len(trades)
-        wr = len(wins) / total * 100 if total > 0 else 0
-        pf = abs(sum(wins) / sum(losses)) if losses and sum(losses) != 0 else float('inf')
-        pnl = sum(t['PnL'] for t in trades)
-        return total, wr, pf, pnl
+        total  = len(trades)
+        wr     = len(wins) / total * 100 if total > 0 else 0
+        pf     = abs(sum(wins) / sum(losses)) if losses and sum(losses) != 0 else float('inf')
+        pnl    = sum(t['PnL'] for t in trades)
+        avg_w  = sum(wins)   / len(wins)   if wins   else 0.0
+        avg_l  = sum(losses) / len(losses) if losses else 0.0
+        return total, wr, pf, pnl, avg_w, avg_l
 
-    sol_n, sol_wr, sol_pf, sol_pnl = _stats(sol_trades)
-    ada_n, ada_wr, ada_pf, ada_pnl = _stats(ada_trades)
-    xrp_n, xrp_wr, xrp_pf, xrp_pnl = _stats(xrp_trades)
-    all_n, all_wr, all_pf, all_pnl = _stats(sol_trades + ada_trades + xrp_trades)
+    sol_n, sol_wr, sol_pf, sol_pnl, sol_avgw, sol_avgl = _stats(sol_trades)
+    ada_n, ada_wr, ada_pf, ada_pnl, ada_avgw, ada_avgl = _stats(ada_trades)
+    xrp_n, xrp_wr, xrp_pf, xrp_pnl, xrp_avgw, xrp_avgl = _stats(xrp_trades)
+    all_n, all_wr, all_pf, all_pnl, _, _ = _stats(sol_trades + ada_trades + xrp_trades)
 
     # Sharpe
     sharpe = 0
@@ -688,12 +693,50 @@ def run_triple(config, margin_scheme: dict, label: str = ""):
         'mdd%': max_dd * 100,
         'sharpe': sharpe,
         'sol_n': sol_n, 'sol_wr': sol_wr, 'sol_pf': sol_pf, 'sol_pnl': sol_pnl,
+        'sol_avgw': sol_avgw, 'sol_avgl': sol_avgl,
         'ada_n': ada_n, 'ada_wr': ada_wr, 'ada_pf': ada_pf, 'ada_pnl': ada_pnl,
+        'ada_avgw': ada_avgw, 'ada_avgl': ada_avgl,
         'xrp_n': xrp_n, 'xrp_wr': xrp_wr, 'xrp_pf': xrp_pf, 'xrp_pnl': xrp_pnl,
+        'xrp_avgw': xrp_avgw, 'xrp_avgl': xrp_avgl,
         'all_n': all_n, 'all_wr': all_wr, 'all_pf': all_pf,
         'simul_2': simul_2, 'simul_3': simul_3,
         'equity_df': eq_df,
+        'sol_trades': sol_trades,
+        'ada_trades': ada_trades,
+        'xrp_trades': xrp_trades,
     }
+
+
+def _yearly_table(trades, label):
+    """印出某策略的年度績效明細"""
+    if not trades:
+        return
+    df = pd.DataFrame(trades)
+    df['Year'] = pd.to_datetime(df['Time']).dt.year
+    rows = []
+    for y, g in df.groupby('Year'):
+        wins   = g[g['PnL'] > 0]['PnL']
+        losses = g[g['PnL'] <= 0]['PnL']
+        total  = len(g)
+        wr     = len(wins) / total * 100 if total > 0 else 0
+        pf     = abs(wins.sum() / losses.sum()) if losses.sum() != 0 else float('inf')
+        avgw   = wins.mean()   if len(wins)   > 0 else 0
+        avgl   = losses.mean() if len(losses) > 0 else 0
+        rr     = abs(avgw / avgl) if avgl != 0 else 0
+        rows.append({'年度': y, '交易': total, '勝率%': round(wr, 1),
+                     '損益': round(g['PnL'].sum(), 2),
+                     'PF': round(pf, 2), '盈虧比': round(rr, 2)})
+    df_y = pd.DataFrame(rows)
+    W = 62
+    print(f"\n  {'─'*W}")
+    print(f"  {label} 年度明細")
+    print(f"  {'─'*W}")
+    print(f"  {'年度':>4}  {'交易':>5}  {'勝率%':>6}  {'損益':>14}  {'PF':>5}  {'盈虧比':>6}")
+    print(f"  {'─'*W}")
+    for _, row in df_y.iterrows():
+        print(f"  {int(row['年度']):>4}  {int(row['交易']):>5}  {row['勝率%']:>6.1f}  "
+              f"{row['損益']:>+14,.2f}  {row['PF']:>5.2f}  {row['盈虧比']:>6.2f}")
+    print(f"  {'─'*W}")
 
 
 def print_result(r):
@@ -706,15 +749,51 @@ def print_result(r):
     print(f"  Sharpe:     {r['sharpe']:.3f}")
     print(f"  總 PF:      {r['all_pf']:.2f}")
     print(f"")
-    print(f"  {'策略':<6} {'交易數':>6} {'勝率%':>8} {'PF':>8} {'損益':>16}")
-    print(f"  {'-'*48}")
-    print(f"  {'SOL':<6} {r['sol_n']:>6} {r['sol_wr']:>7.1f}% {r['sol_pf']:>7.2f} {r['sol_pnl']:>+15,.2f}")
-    print(f"  {'ADA':<6} {r['ada_n']:>6} {r['ada_wr']:>7.1f}% {r['ada_pf']:>7.2f} {r['ada_pnl']:>+15,.2f}")
-    print(f"  {'XRP':<6} {r['xrp_n']:>6} {r['xrp_wr']:>7.1f}% {r['xrp_pf']:>7.2f} {r['xrp_pnl']:>+15,.2f}")
+    print(f"  {'策略':<6} {'交易數':>6} {'勝率%':>8} {'PF':>7} {'盈虧比':>7} {'損益':>16}")
+    print(f"  {'-'*56}")
+    for key, name in [('sol', 'SOL'), ('ada', 'ADA'), ('xrp', 'XRP')]:
+        n    = r[f'{key}_n']
+        wr   = r[f'{key}_wr']
+        pf   = r[f'{key}_pf']
+        pnl  = r[f'{key}_pnl']
+        avgw = r[f'{key}_avgw']
+        avgl = r[f'{key}_avgl']
+        rr   = abs(avgw / avgl) if avgl != 0 else 0
+        print(f"  {name:<6} {n:>6} {wr:>7.1f}% {pf:>7.2f} {rr:>7.2f} {pnl:>+15,.2f}")
     print(f"  {'合計':<6} {r['all_n']:>6} {r['all_wr']:>7.1f}% {r['all_pf']:>7.2f}")
     print(f"")
     print(f"  同時持倉 2 策略: {r['simul_2']:,} 根 K 棒")
     print(f"  同時持倉 3 策略: {r['simul_3']:,} 根 K 棒")
+
+    # ── 各策略年度明細 ────────────────────────────────────────────
+    _yearly_table(r['sol_trades'], 'SOL 趨勢')
+    _yearly_table(r['ada_trades'], 'ADA 唐奇安')
+    _yearly_table(r['xrp_trades'], 'XRP 斐波')
+
+
+def _build_single_equity(trades: list, initial_cap: float,
+                         time_index: pd.DatetimeIndex) -> pd.Series:
+    """
+    用單一策略的 trades 重建「假設獨立運行」的淨值曲線。
+    以每筆交易的 PnL/Cap（相對報酬率）複利套用到獨立的 initial_cap，
+    避免大倉位虧損金額遠超獨立初始資金而造成負數假象。
+    """
+    if not trades:
+        return pd.Series(initial_cap, index=time_index)
+
+    times = pd.to_datetime([t['Time'] for t in trades])
+    # 每筆報酬率 = PnL / 當時聯合資金池
+    returns = pd.Series(
+        [t['PnL'] / t['Cap'] if t.get('Cap', 0) > 0 else 0.0 for t in trades],
+        index=times
+    )
+    # 同一時間點有多筆交易時加總報酬率
+    returns = returns.groupby(level=0).sum()
+    # 複利累積，從 initial_cap 出發
+    cum_equity = initial_cap * (1 + returns).cumprod()
+
+    full = cum_equity.reindex(time_index).ffill().fillna(initial_cap)
+    return full
 
 
 def main():
@@ -727,56 +806,49 @@ def main():
     print(f"  槓桿: {leverage}x | 初始資金: ${config['risk']['initial_capital']}")
     print(f"  SOL: {config['trading'].get('timeframe','15m')} | ADA: 1h | XRP: 1h")
 
-    schemes = [
-        {'SOL': 0.50, 'ADA': 0.25, 'XRP': 0.125},
-        {'SOL': 0.40, 'ADA': 0.20, 'XRP': 0.10},
-    ]
-    labels = [
-        '方案 A: 50% / 25% / 12.5%（合計 87.5%）',
-        '方案 B: 40% / 20% / 10%（合計 70%）',
-    ]
-
-    results = []
-    for scheme, label in zip(schemes, labels):
-        print(f"\n  執行 {label} ...")
-        r = run_triple(config, scheme, label)
-        results.append(r)
-        print_result(r)
-
-    # ── 比較表 ───────────────────────────────────────────────
-    print(f"\n  {'='*70}")
-    print(f"  方案比較")
-    print(f"  {'='*70}")
-    a, b = results[0], results[1]
-    print(f"  {'指標':<16} {'方案A (50/25/12.5)':>22} {'方案B (40/20/10)':>22}")
-    print(f"  {'-'*60}")
-    a_final = f"${a['final']:,.0f}"
-    b_final = f"${b['final']:,.0f}"
-    print(f"  {'最終資金':<16} {a_final:>22} {b_final:>22}")
-    print(f"  {'總報酬%':<16} {a['ret%']:>+21.1f}% {b['ret%']:>+21.1f}%")
-    print(f"  {'MDD%':<16} {a['mdd%']:>+21.1f}% {b['mdd%']:>+21.1f}%")
-    print(f"  {'Sharpe':<16} {a['sharpe']:>22.3f} {b['sharpe']:>22.3f}")
-    print(f"  {'總 PF':<16} {a['all_pf']:>22.2f} {b['all_pf']:>22.2f}")
-    print(f"  {'總交易數':<16} {a['all_n']:>22} {b['all_n']:>22}")
-    print(f"  {'同時2策略':<16} {a['simul_2']:>22,} {b['simul_2']:>22,}")
-    print(f"  {'同時3策略':<16} {a['simul_3']:>22,} {b['simul_3']:>22,}")
+    r = run_triple(config, label='先到先得 40/20/10')
+    print_result(r)
 
     # ── 淨值曲線 ─────────────────────────────────────────────
+    eq = r['equity_df']
+    
+    # 修正 1：明確將 time_index 轉換為 pd.DatetimeIndex，而非 pd.Series
+    time_index = pd.DatetimeIndex(eq['timestamp'])
+    initial_cap = config['risk']['initial_capital']
+
+    sol_eq = _build_single_equity(r['sol_trades'], initial_cap, time_index)
+    ada_eq = _build_single_equity(r['ada_trades'], initial_cap, time_index)
+    xrp_eq = _build_single_equity(r['xrp_trades'], initial_cap, time_index)
+
     fig, ax = plt.subplots(figsize=(16, 7))
-    for r, color in zip(results, ['#15b959', '#2d82bb']):
-        eq = r['equity_df']
-        ax.plot(pd.to_datetime(eq['timestamp']), eq['equity'],
-                label=f"{r['label']} (MDD {r['mdd%']:+.1f}%)", color=color, linewidth=1)
-    ax.set_title('三策略聯合回測 — 保證金分配方案比較', fontsize=14)
+
+    # 對數軸不能有 ≤ 0 的值，clip 到最小正數以避免垂直向下的異常線
+    _floor = 1.0
+    ax.plot(sol_eq.index, sol_eq.clip(lower=_floor), color="#EC9950", linewidth=1.2,
+            alpha=0.75, label=f"SOL  (獨立) +{r['sol_pnl']:,.0f}")
+    ax.plot(ada_eq.index, ada_eq.clip(lower=_floor), color="#44C744", linewidth=1.2,
+            alpha=0.75, label=f"ADA  (獨立) +{r['ada_pnl']:,.0f}")
+    ax.plot(xrp_eq.index, xrp_eq.clip(lower=_floor), color="#E069E0", linewidth=1.2,
+            alpha=0.75, label=f"XRP  (獨立) +{r['xrp_pnl']:,.0f}")
+
+    # 聯合曲線（粗線，最上層）
+    ax.plot(time_index, eq['equity'].clip(lower=_floor), color="#2f8ccb", linewidth=1.5,
+            label=f"聯合 40/20/10  +{r['ret%']:.0f}%")
+
+    ax.axhline(initial_cap, color='gray', linestyle='--', alpha=0.4, linewidth=0.8)
+    ax.set_title(
+        f"三策略聯合回測 40/20/10 | MDD {r['mdd%']:+.1f}% | Sharpe {r['sharpe']:.3f}",
+        fontsize=14
+    )
     ax.set_ylabel('資金 (USDT)')
     ax.set_xlabel('日期')
-    ax.legend(fontsize=10)
     ax.set_yscale('log')
+    ax.legend(loc='upper left', fontsize=9)
     ax.grid(True, alpha=0.3)
     plt.tight_layout()
-    plt.savefig('triple_margin_compare.png', dpi=150)
+    plt.savefig('triple_backtest.png', dpi=150)
     plt.show()
-    print(f"\n  圖表已儲存: triple_margin_compare.png")
+    print(f"\n  圖表已儲存: triple_backtest.png")
 
 
 if __name__ == '__main__':
