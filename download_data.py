@@ -40,6 +40,12 @@ def load_symbols_from_config(config_path="config.json") -> list[dict]:
         ada_tf     = config['ada_donchian']['timeframe']
         symbols.append({'symbol': ada_symbol, 'timeframe': ada_tf})
 
+    # XRP Fib
+    if 'xrp_fib' in config:
+        xrp_symbol = config['xrp_fib']['symbol']
+        xrp_tf     = config['xrp_fib']['timeframe']
+        symbols.append({'symbol': xrp_symbol, 'timeframe': xrp_tf})
+
     return symbols
 
 
