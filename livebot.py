@@ -956,18 +956,10 @@ class LiveTradingBot:
                         _N = min(max(1, int(total_bal / self.max_trade_usdt_cap)),
                                  int(self.max_position_cap / self.max_trade_usdt_cap))
                         if _N == 1:
-                            size, _ = CoreStrategy.calculate_position_size(
-                                total_bal, self.risk_per_trade, sl_dist, float(cl.open),
-                                self.max_pos_ratio, self.leverage, self.max_trade_usdt_cap
-                            )
+                            # 可用保證金 × 40%（free_bal 已扣除其他幣種鎖倉保證金）
+                            size = (free_bal * 0.40 * self.leverage) / float(cl.open)
                         else:
                             size = self.max_trade_usdt_cap / float(cl.open)
-
-                        # 🛡️ 先到先得：依目前其他策略持倉數決定保證金 tier
-                        _MARGIN_TIERS = [0.40, 0.20, 0.10]
-                        _open_count = (ada_s['position'] != 0) + (xrp_s['position'] != 0)
-                        max_size_by_free_margin = (total_bal * _MARGIN_TIERS[_open_count] * self.leverage) / float(cl.open)
-                        size = min(size, max_size_by_free_margin)
 
                         if l_cond:
                             order = self.execute_order('SOL', 'buy', size, reason="SOL 做多進場")
@@ -1120,18 +1112,10 @@ class LiveTradingBot:
                             # 自適應 TWAP：計算 N
                             _N = max(1, int(total_bal * self.ADA_LEVERAGE / self.ADA_MAX_TRADE_CAP))
                             if _N == 1:
-                                size = min(
-                                    (total_bal * self.ADA_RISK_PCT) / risk_per_unit,
-                                    (total_bal * self.ADA_LEVERAGE) / float(cl_ada.open)
-                                )
+                                # 可用保證金 × 40%（free_bal 已扣除其他幣種鎖倉保證金）
+                                size = (free_bal * 0.40 * self.ADA_LEVERAGE) / float(cl_ada.open)
                             else:
                                 size = self.ADA_MAX_TRADE_CAP / float(cl_ada.open)
-
-                            # 🛡️ 先到先得：依目前其他策略持倉數決定保證金 tier
-                            _MARGIN_TIERS = [0.40, 0.20, 0.10]
-                            _open_count = (sol_s['position'] != 0) + (xrp_s['position'] != 0)
-                            max_size_by_free_margin = (total_bal * _MARGIN_TIERS[_open_count] * self.ADA_LEVERAGE) / float(cl_ada.open)
-                            size = min(size, max_size_by_free_margin)
 
                             sl_dist    = max(self.ADA_ATR_SL_MULT * prev_atr, float(cl_ada.open) * self.min_sl_pct)
                             trail_dist = max(self.ADA_TRAIL_ATR * prev_atr, float(cl_ada.open) * self.min_sl_pct)
@@ -1375,13 +1359,8 @@ class LiveTradingBot:
                             else:
                                 total_bal = free_bal = self.capital
 
-                            # 🛡️ 先到先得：依目前其他策略持倉數決定保證金 tier
-                            _MARGIN_TIERS = [0.40, 0.20, 0.10]
-                            _open_count = (sol_s['position'] != 0) + (ada_s['position'] != 0)
-                            size = min(
-                                (total_bal * self.XRP_RISK_PCT) / risk_per_unit,
-                                (total_bal * _MARGIN_TIERS[_open_count] * self.XRP_LEVERAGE) / fib_price
-                            )
+                            # 可用保證金 × 40%（free_bal 已扣除其他幣種鎖倉保證金）
+                            size = (free_bal * 0.40 * self.XRP_LEVERAGE) / fib_price
 
                             if size > 0:
                                 side = 'buy' if direction == 1 else 'sell'

@@ -8,9 +8,13 @@ SOL 趨勢 + ADA 唐奇安 + XRP 斐波  三策略共用資金聯合回測
 風控  ：連續虧損跳過、同時持倉統計
 
 用法:
-    python backtest_triple.py
+    python backtest_triple.py                  # 三種方案全比較
+    python backtest_triple.py --scheme tier    # 只跑現行先到先得
+    python backtest_triple.py --scheme free_a  # 可用×40% + 風險限
+    python backtest_triple.py --scheme free_b  # 可用×40% 直接用
 """
 
+import argparse
 import json
 import pandas as pd
 import numpy as np
@@ -25,7 +29,7 @@ plt.rcParams['font.sans-serif'] = ['Microsoft JhengHei']
 plt.rcParams['axes.unicode_minus'] = False
 
 SLIPPAGE          = 0.001
-MAX_POSITION_CAP  = 40_000_000.0   # SOL 幣安最大持倉名目價值
+MAX_POSITION_CAP  = 100_000_000.0   # SOL 幣安最大持倉名目價值
 
 
 def load_config(path="config.json") -> dict:
@@ -44,9 +48,16 @@ def load_csv(symbol: str, timeframe: str) -> pd.DataFrame:
 
 
 _MARGIN_TIERS = [0.40, 0.20, 0.10]   # 先到先得：第1/2/3個進場的策略分別拿 40/20/10%
+_FREE_PCT     = 0.40                  # free_margin 方案：每次取可用保證金的固定 40%
 
 
-def run_triple(config, label: str = ""):
+def run_triple(config, label: str = "", scheme: str = 'tier'):
+    """
+    scheme:
+      'tier'   — 先到先得 40/20/10% of total_bal（現行）
+      'free_a' — free_margin × 40%，再和風險計算取小
+      'free_b' — free_margin × 40%，直接當倉位上限
+    """
     # ── 載入資料 ─────────────────────────────────────────────
     sol_tf = config['trading'].get('timeframe', '15m')
     df_sol = load_csv('SOL', sol_tf)
@@ -199,11 +210,14 @@ def run_triple(config, label: str = ""):
 
             # ── 進場執行（上一根產生信號，本根開盤執行）──────
             if sol_pos == 0 and (sol_long_sig or sol_short_sig):
-                # 先到先得：依目前其他策略持倉數決定保證金 tier
-                _open_count = (ada_pos != 0) + (xrp_pos != 0)
                 other_margin = ada_margin_used + xrp_margin_used
-                avail = capital - other_margin
-                max_margin = capital * _MARGIN_TIERS[_open_count]
+                free_margin  = max(0.0, capital - other_margin)
+
+                if scheme == 'tier':
+                    _open_count  = (ada_pos != 0) + (xrp_pos != 0)
+                    alloc_margin = capital * _MARGIN_TIERS[_open_count]
+                else:  # free_a / free_b
+                    alloc_margin = free_margin * _FREE_PCT
 
                 sl_dist = sol_saved_sl_dist if sol_saved_sl_dist > 0 else max(sol_sl_atr * cur_atr, cur_open * 0.001)
                 sol_saved_sl_dist = 0.0
@@ -211,18 +225,19 @@ def run_triple(config, label: str = ""):
                 if sol_twap_active and sol_twap_remaining > 0:
                     sol_size      = sol_twap_size_each
                     sol_init_risk = sol_twap_remaining * sol_twap_size_each * sl_dist
-                else:
+                elif scheme == 'free_b':
+                    sol_size      = alloc_margin * sol_leverage / cur_open
+                    sol_init_risk = sol_size * sl_dist
+                else:  # tier / free_a
                     sol_size, sol_init_risk = CoreStrategy.calculate_position_size(
                         capital, sol_risk, sl_dist, cur_open,
                         sol_max_pos, sol_leverage, sol_max_cap
                     )
 
                 # 保證金上限裁切
-                margin_needed = sol_size * cur_open / sol_leverage
-                if margin_needed > max_margin:
-                    sol_size = max_margin * sol_leverage / cur_open
-                if margin_needed > avail:
-                    sol_size = max(0, avail * sol_leverage / cur_open)
+                if scheme != 'free_b':
+                    sol_size = min(sol_size, alloc_margin * sol_leverage / cur_open)
+                sol_size = min(sol_size, max(0.0, free_margin * sol_leverage / cur_open))
 
                 if sol_size > 0:
                     if sol_long_sig:
@@ -449,17 +464,25 @@ def run_triple(config, label: str = ""):
                     direction = 1 if a_C > dc_high else -1
                     risk_per_unit = ada_sl_mult * a_atr
                     if risk_per_unit > 0:
-                        _open_count = (sol_pos != 0) + (xrp_pos != 0)
                         other_margin = sol_margin_used + xrp_margin_used
-                        available = capital - other_margin
-                        max_margin = capital * _MARGIN_TIERS[_open_count]
-                        if available > 10:
-                            N = max(1, int(available / ada_max_cap))
+                        free_margin  = max(0.0, capital - other_margin)
+
+                        if scheme == 'tier':
+                            _open_count  = (sol_pos != 0) + (xrp_pos != 0)
+                            alloc_margin = capital * _MARGIN_TIERS[_open_count]
+                        else:  # free_a / free_b
+                            alloc_margin = free_margin * _FREE_PCT
+
+                        if free_margin > 10:
+                            N = max(1, int(free_margin / ada_max_cap))
                             if N == 1:
-                                raw_sz = (available * ada_risk) / risk_per_unit
-                                max_sz = available * leverage / a_C
-                                alloc_sz = max_margin * leverage / a_C
-                                size_each = min(raw_sz, max_sz, alloc_sz)
+                                alloc_sz = alloc_margin * leverage / a_C
+                                if scheme == 'free_b':
+                                    size_each = alloc_sz
+                                else:  # tier / free_a
+                                    raw_sz = (free_margin * ada_risk) / risk_per_unit
+                                    max_sz = free_margin * leverage / a_C
+                                    size_each = min(raw_sz, max_sz, alloc_sz)
                             else:
                                 size_each = ada_max_cap / a_C
 
@@ -582,17 +605,25 @@ def run_triple(config, label: str = ""):
                 elif has_sig:
                     risk_per_unit = xrp_sl_mult * x_atr
                     if risk_per_unit > 0:
-                        _open_count = (sol_pos != 0) + (ada_pos != 0)
                         other_margin = sol_margin_used + ada_margin_used
-                        available = capital - other_margin
-                        max_margin = capital * _MARGIN_TIERS[_open_count]
-                        if available > 10:
-                            N = max(1, int(available / xrp_max_cap))
+                        free_margin  = max(0.0, capital - other_margin)
+
+                        if scheme == 'tier':
+                            _open_count  = (sol_pos != 0) + (ada_pos != 0)
+                            alloc_margin = capital * _MARGIN_TIERS[_open_count]
+                        else:  # free_a / free_b
+                            alloc_margin = free_margin * _FREE_PCT
+
+                        if free_margin > 10:
+                            N = max(1, int(free_margin / xrp_max_cap))
                             if N == 1:
-                                raw_sz = (available * xrp_risk) / risk_per_unit
-                                max_sz = available * leverage / x_C
-                                alloc_sz = max_margin * leverage / x_C
-                                size_each = min(raw_sz, max_sz, alloc_sz)
+                                alloc_sz = alloc_margin * leverage / x_C
+                                if scheme == 'free_b':
+                                    size_each = alloc_sz
+                                else:  # tier / free_a
+                                    raw_sz = (free_margin * xrp_risk) / risk_per_unit
+                                    max_sz = free_margin * leverage / x_C
+                                    size_each = min(raw_sz, max_sz, alloc_sz)
                             else:
                                 size_each = xrp_max_cap / x_C
 
@@ -796,59 +827,108 @@ def _build_single_equity(trades: list, initial_cap: float,
     return full
 
 
+_SCHEME_LABELS = {
+    'tier':   '先到先得 40/20/10',
+    'free_a': '可用×40% + 風險限',
+    'free_b': '可用×40% 直接用',
+}
+_SCHEME_COLORS = {
+    'tier':   '#2f8ccb',
+    'free_a': '#e67e22',
+    'free_b': '#2ecc71',
+}
+
+
 def main():
+    parser = argparse.ArgumentParser(description='三策略聯合回測')
+    parser.add_argument(
+        '--scheme', default='all',
+        choices=['tier', 'free_a', 'free_b', 'all'],
+        help='保證金方案 (預設: all = 三種全跑並比較)'
+    )
+    args = parser.parse_args()
+
     config = load_config()
     bt = config.get('backtest', {})
     leverage = config['risk'].get('leverage', 2)
+    initial_cap = config['risk']['initial_capital']
 
     print(f"三策略聯合回測 — SOL 趨勢 + ADA 唐奇安 + XRP 斐波")
     print(f"  期間: {bt.get('start_date','?')} ~ {bt.get('end_date','?')}")
-    print(f"  槓桿: {leverage}x | 初始資金: ${config['risk']['initial_capital']}")
+    print(f"  槓桿: {leverage}x | 初始資金: ${initial_cap}")
     print(f"  SOL: {config['trading'].get('timeframe','15m')} | ADA: 1h | XRP: 1h")
 
-    r = run_triple(config, label='先到先得 40/20/10')
-    print_result(r)
+    schemes = ['tier', 'free_a', 'free_b'] if args.scheme == 'all' else [args.scheme]
+
+    results = {}
+    for s in schemes:
+        label = _SCHEME_LABELS[s]
+        print(f"\n  ── 跑方案: {label} ──")
+        r = run_triple(config, label=label, scheme=s)
+        results[s] = r
+        if args.scheme != 'all':
+            print_result(r)
+
+    # ── 比較摘要（all 模式）──────────────────────────────────────
+    if args.scheme == 'all':
+        W = 80
+        print(f"\n{'='*W}")
+        print(f"  三種方案比較")
+        print(f"{'='*W}")
+        print(f"  {'方案':<20} {'最終資金':>14} {'報酬%':>10} {'MDD%':>8} {'Sharpe':>8} {'PF':>6} {'交易':>6}")
+        print(f"  {'-'*W}")
+        for s, r in results.items():
+            print(f"  {_SCHEME_LABELS[s]:<20} ${r['final']:>13,.0f} "
+                  f"{r['ret%']:>+9.1f}% {r['mdd%']:>+7.1f}% "
+                  f"{r['sharpe']:>8.3f} {r['all_pf']:>6.2f} {r['all_n']:>6}")
+        print(f"{'='*W}")
 
     # ── 淨值曲線 ─────────────────────────────────────────────
-    eq = r['equity_df']
-    
-    # 修正 1：明確將 time_index 轉換為 pd.DatetimeIndex，而非 pd.Series
-    time_index = pd.DatetimeIndex(eq['timestamp'])
-    initial_cap = config['risk']['initial_capital']
-
-    sol_eq = _build_single_equity(r['sol_trades'], initial_cap, time_index)
-    ada_eq = _build_single_equity(r['ada_trades'], initial_cap, time_index)
-    xrp_eq = _build_single_equity(r['xrp_trades'], initial_cap, time_index)
+    r0 = results[schemes[0]]
+    eq0 = r0['equity_df']
+    time_index = pd.DatetimeIndex(eq0['timestamp'])
 
     fig, ax = plt.subplots(figsize=(16, 7))
-
-    # 對數軸不能有 ≤ 0 的值，clip 到最小正數以避免垂直向下的異常線
     _floor = 1.0
-    ax.plot(sol_eq.index, sol_eq.clip(lower=_floor), color="#EC9950", linewidth=1.2,
-            alpha=0.75, label=f"SOL  (獨立) +{r['sol_pnl']:,.0f}")
-    ax.plot(ada_eq.index, ada_eq.clip(lower=_floor), color="#44C744", linewidth=1.2,
-            alpha=0.75, label=f"ADA  (獨立) +{r['ada_pnl']:,.0f}")
-    ax.plot(xrp_eq.index, xrp_eq.clip(lower=_floor), color="#E069E0", linewidth=1.2,
-            alpha=0.75, label=f"XRP  (獨立) +{r['xrp_pnl']:,.0f}")
 
-    # 聯合曲線（粗線，最上層）
-    ax.plot(time_index, eq['equity'].clip(lower=_floor), color="#2f8ccb", linewidth=1.5,
-            label=f"聯合 40/20/10  +{r['ret%']:.0f}%")
+    if args.scheme != 'all':
+        # 單方案：畫獨立子策略 + 聯合
+        r = results[schemes[0]]
+        eq = r['equity_df']
+        sol_eq = _build_single_equity(r['sol_trades'], initial_cap, time_index)
+        ada_eq = _build_single_equity(r['ada_trades'], initial_cap, time_index)
+        xrp_eq = _build_single_equity(r['xrp_trades'], initial_cap, time_index)
+        ax.plot(sol_eq.index, sol_eq.clip(lower=_floor), color="#EC9950", linewidth=1.2,
+                alpha=0.75, label=f"SOL (獨立) +{r['sol_pnl']:,.0f}")
+        ax.plot(ada_eq.index, ada_eq.clip(lower=_floor), color="#44C744", linewidth=1.2,
+                alpha=0.75, label=f"ADA (獨立) +{r['ada_pnl']:,.0f}")
+        ax.plot(xrp_eq.index, xrp_eq.clip(lower=_floor), color="#E069E0", linewidth=1.2,
+                alpha=0.75, label=f"XRP (獨立) +{r['xrp_pnl']:,.0f}")
+        ax.plot(pd.DatetimeIndex(eq['timestamp']), eq['equity'].clip(lower=_floor),
+                color=_SCHEME_COLORS[schemes[0]], linewidth=1.8,
+                label=f"聯合 {r['label']}  +{r['ret%']:.0f}%")
+        title = f"三策略聯合 {r['label']} | MDD {r['mdd%']:+.1f}% | Sharpe {r['sharpe']:.3f}"
+    else:
+        # 多方案：只畫三條聯合曲線做比較
+        for s, r in results.items():
+            eq = r['equity_df']
+            ax.plot(pd.DatetimeIndex(eq['timestamp']), eq['equity'].clip(lower=_floor),
+                    color=_SCHEME_COLORS[s], linewidth=1.6,
+                    label=f"{r['label']}  MDD{r['mdd%']:+.1f}%  +{r['ret%']:.0f}%")
+        title = "三策略聯合 — 保證金方案比較"
 
     ax.axhline(initial_cap, color='gray', linestyle='--', alpha=0.4, linewidth=0.8)
-    ax.set_title(
-        f"三策略聯合回測 40/20/10 | MDD {r['mdd%']:+.1f}% | Sharpe {r['sharpe']:.3f}",
-        fontsize=14
-    )
+    ax.set_title(title, fontsize=14)
     ax.set_ylabel('資金 (USDT)')
     ax.set_xlabel('日期')
     ax.set_yscale('log')
-    ax.legend(loc='upper left', fontsize=9)
+    ax.legend(loc='upper left', fontsize=10)
     ax.grid(True, alpha=0.3)
     plt.tight_layout()
-    plt.savefig('triple_backtest.png', dpi=150)
+    fname = 'triple_scheme_compare.png' if args.scheme == 'all' else 'triple_backtest.png'
+    plt.savefig(fname, dpi=150)
     plt.show()
-    print(f"\n  圖表已儲存: triple_backtest.png")
+    print(f"\n  圖表已儲存: {fname}")
 
 
 if __name__ == '__main__':
