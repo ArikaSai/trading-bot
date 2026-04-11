@@ -58,6 +58,7 @@ class LiveTradingBot:
         self.ADA_TRAIL_ATR     = ada_cfg.get('trail_atr', 3.0)
         self.ADA_ATR_SL_MULT   = ada_cfg.get('atr_sl_mult', 2.0)
         self.ADA_RISK_PCT      = ada_cfg.get('risk_pct', 0.15)
+        self.ADA_LEVERAGE      = ada_cfg.get('leverage', 1)
         self.ADA_MAX_TRADE_CAP = ada_cfg.get('max_trade_cap', 200_000.0)
         self.ADA_MAX_CONSEC    = ada_cfg.get('max_consec_losses', 3)
         self.ADA_FEE           = self.taker_fee_rate
@@ -70,6 +71,7 @@ class LiveTradingBot:
         self.XRP_FIB_TOL       = xrp_cfg.get('fib_tol', 0.005)
         self.XRP_ATR_SL_MULT   = xrp_cfg.get('atr_sl_mult', 2.0)
         self.XRP_RISK_PCT      = xrp_cfg.get('risk_pct', 0.15)
+        self.XRP_LEVERAGE      = xrp_cfg.get('leverage', 1)
         self.XRP_MAX_TRADE_CAP = xrp_cfg.get('max_trade_cap', 200_000.0)
         self.XRP_MAX_CONSEC    = xrp_cfg.get('max_consec_losses', 3)
         self.XRP_FEE           = self.taker_fee_rate
@@ -98,11 +100,11 @@ class LiveTradingBot:
         self._ada_twap_size_each = 0.0
         self._ada_twap_direction = 0
 
-        # XRP TWAP 狀態
-        self._xrp_twap_active    = False
-        self._xrp_twap_remaining = 0
-        self._xrp_twap_size_each = 0.0
-        self._xrp_twap_direction = 0
+        # XRP 限價單狀態（方案A：無確認，掛在 Fib 水平）
+        self._xrp_limit_order_id  = None   # 交易所 order ID；模擬模式用 'pending'
+        self._xrp_limit_price     = 0.0    # 掛單價格（Fib 水平）
+        self._xrp_limit_direction = 0      # 1 做多 / -1 做空
+        self._xrp_limit_size      = 0.0    # 掛單數量
 
         self.live_trade    = self.config['system']['live_trade']
         self.check_interval = self.config['system']['check_interval']
@@ -128,8 +130,8 @@ class LiveTradingBot:
 
         print(f"🤖 三核心機器人就緒 | 模式: {'🔴 實盤' if self.live_trade else '🟢 模擬'}")
         print(f"   SOL 趨勢: {self.risk_per_trade*100}% 風險 | {self.leverage}x | 熔斷 {self.max_consec_losses} 次")
-        print(f"   ADA Donchian: N={self.ADA_ENTRY_N} | Trail x{self.ADA_TRAIL_ATR} | 熔斷 {self.ADA_MAX_CONSEC} 次")
-        print(f"   XRP Fib: Swing={self.XRP_SWING_N} | Fib={self.XRP_FIB_LEVEL} | Trail x{self.XRP_TRAIL_ATR} | 熔斷 {self.XRP_MAX_CONSEC} 次")
+        print(f"   ADA Donchian: N={self.ADA_ENTRY_N} | Trail x{self.ADA_TRAIL_ATR} | {self.ADA_LEVERAGE}x | 熔斷 {self.ADA_MAX_CONSEC} 次")
+        print(f"   XRP Fib: Swing={self.XRP_SWING_N} | Fib={self.XRP_FIB_LEVEL} | Trail x{self.XRP_TRAIL_ATR} | {self.XRP_LEVERAGE}x | 熔斷 {self.XRP_MAX_CONSEC} 次")
 
     # ── 狀態字典 ─────────────────────────────────────────────────────
 
@@ -175,8 +177,10 @@ class LiveTradingBot:
             self._ada_twap_active    = False
             self._ada_twap_remaining = 0
         elif strat_name == 'XRP':
-            self._xrp_twap_active    = False
-            self._xrp_twap_remaining = 0
+            self._xrp_limit_order_id  = None
+            self._xrp_limit_price     = 0.0
+            self._xrp_limit_direction = 0
+            self._xrp_limit_size      = 0.0
 
     # ── 持久化 ───────────────────────────────────────────────────────
 
@@ -198,6 +202,12 @@ class LiveTradingBot:
                 "skip_next_trade":    data["skip_next_trade"],
                 "in_skip_zone":       data["in_skip_zone"],
             }
+        save_data['_xrp_limit'] = {
+            'order_id':  self._xrp_limit_order_id,
+            'price':     self._xrp_limit_price,
+            'direction': self._xrp_limit_direction,
+            'size':      self._xrp_limit_size,
+        }
         with open(self.state_path, 'w') as f:
             json.dump(save_data, f, indent=2)
 
@@ -218,6 +228,16 @@ class LiveTradingBot:
                         side = '多單' if self.state[strat]['position'] == 1 else '空單'
                         sl   = self.state[strat]['trailing_stop']
                         print(f"♻️  {strat} 持倉還原：{side} @ {ep:.4f} | 追蹤止損 {sl:.4f}")
+            # 還原 XRP 限價單狀態
+            if '_xrp_limit' in saved:
+                lim = saved['_xrp_limit']
+                self._xrp_limit_order_id  = lim.get('order_id')
+                self._xrp_limit_price     = lim.get('price', 0.0)
+                self._xrp_limit_direction = lim.get('direction', 0)
+                self._xrp_limit_size      = lim.get('size', 0.0)
+                if self._xrp_limit_order_id and self.state['XRP'].get('position', 0) == 0:
+                    side_str = '做多' if self._xrp_limit_direction == 1 else '做空'
+                    print(f"♻️  XRP 限價掛單還原：{side_str} @ {self._xrp_limit_price:.4f} | size={self._xrp_limit_size:.2f}")
         except Exception as e:
             print(f"⚠️ 讀取存檔失敗: {e}")
 
@@ -406,7 +426,17 @@ class LiveTradingBot:
             return None
 
         # ── 市價單 ───────────────────────────────────────────────
+        # 進場前先確認數量 >= 交易所最小單位（平倉單不做此檢查）
         is_close = state['position'] != 0   # 在 wipe 前定義，確保 except 區塊可引用
+        if not is_close and size is not None:
+            try:
+                mkt_info  = self.exchange.market(symbol)
+                min_amount = mkt_info.get('limits', {}).get('amount', {}).get('min') or 0
+                if min_amount and float(size) < float(min_amount):
+                    print(f"⚠️ {strat_name} 倉位量 {size:.6f} < 最小下單量 {min_amount}，放棄本次進場")
+                    return None
+            except Exception:
+                pass
         self.wipe_all_orders(raw_symbol)
         setattr(self, f'_{strat_name}_sl_guard', False)
         try:
@@ -618,8 +648,9 @@ class LiveTradingBot:
                         state['trailing_stop'] = state['entry_price'] - trail_dist if state['position'] == 1 else state['entry_price'] + trail_dist
                         state['highest_price'] = state['entry_price']
                         state['lowest_price']  = state['entry_price']
+                        _lev = {'SOL': self.leverage, 'ADA': self.ADA_LEVERAGE, 'XRP': self.XRP_LEVERAGE}.get(strat_name, self.leverage)
                         state['liq_price']     = CoreStrategy.calc_liquidation_price(
-                            state['entry_price'], state['position'], self.leverage, self.mmr)
+                            state['entry_price'], state['position'], _lev, self.mmr)
                         print(f"🔄 {strat_name} 雲端接管 | {side.upper()} @ {state['entry_price']:.4f}")
 
                     if not state['stop_order_id']:
@@ -803,8 +834,26 @@ class LiveTradingBot:
 
     # ── 主循環 ───────────────────────────────────────────────────────
 
+    def _set_leverage_all(self):
+        """啟動時對所有交易對強制設定槓桿，防止交易所預設值與 config 不符"""
+        if not self.live_trade:
+            return
+        lev_map = {
+            'SOL': int(self.leverage),
+            'ADA': int(self.ADA_LEVERAGE),
+            'XRP': int(self.XRP_LEVERAGE),
+        }
+        for strat_name, symbol in self.symbols.items():
+            lev = lev_map.get(strat_name, 1)
+            try:
+                self.exchange.set_leverage(lev, symbol)
+                print(f"  ✅ {strat_name} ({symbol}) 槓桿設為 {lev}x")
+            except Exception as e:
+                print(f"  ⚠️ {strat_name} 槓桿設定失敗: {e}")
+
     def run(self):
         print(f"⏳ 三核心輪詢啟動，每 {self.check_interval}s 一次")
+        self._set_leverage_all()
         while True:
             try:
                 self.sync_position()
@@ -914,8 +963,10 @@ class LiveTradingBot:
                         else:
                             size = self.max_trade_usdt_cap / float(cl.open)
 
-                        # 🛡️ 用「剩餘可用保證金」去壓制最大下單量
-                        max_size_by_free_margin = (free_bal * self.leverage) / float(cl.open)
+                        # 🛡️ 先到先得：依目前其他策略持倉數決定保證金 tier
+                        _MARGIN_TIERS = [0.40, 0.20, 0.10]
+                        _open_count = (ada_s['position'] != 0) + (xrp_s['position'] != 0)
+                        max_size_by_free_margin = (total_bal * _MARGIN_TIERS[_open_count] * self.leverage) / float(cl.open)
                         size = min(size, max_size_by_free_margin)
 
                         if l_cond:
@@ -1001,7 +1052,7 @@ class LiveTradingBot:
                         free_bal = float(bal_data['free']['USDT'])
                     else:
                         free_bal = self.capital
-                    max_by_margin = (free_bal * self.leverage) / float(cl_ada.open)
+                    max_by_margin = (free_bal * self.ADA_LEVERAGE) / float(cl_ada.open)
                     sub_size = min(self._ada_twap_size_each, max_by_margin)
                     if sub_size > 0:
                         side = 'buy' if ada_s['position'] == 1 else 'sell'
@@ -1021,7 +1072,7 @@ class LiveTradingBot:
                             ada_s['entry_price']   = (ada_s['entry_price'] * ada_s['position_size'] + sub_ep * sub_size) / total_sz
                             ada_s['position_size'] = total_sz
                             ada_s['liq_price']     = CoreStrategy.calc_liquidation_price(
-                                ada_s['entry_price'], ada_s['position'], self.leverage, self.mmr)
+                                ada_s['entry_price'], ada_s['position'], self.ADA_LEVERAGE, self.mmr)
                             self._ada_twap_remaining -= 1
                             if self._ada_twap_remaining == 0:
                                 self._ada_twap_active = False
@@ -1067,16 +1118,19 @@ class LiveTradingBot:
                                 total_bal = free_bal = self.capital
 
                             # 自適應 TWAP：計算 N
-                            _N = max(1, int(total_bal * self.leverage / self.ADA_MAX_TRADE_CAP))
+                            _N = max(1, int(total_bal * self.ADA_LEVERAGE / self.ADA_MAX_TRADE_CAP))
                             if _N == 1:
                                 size = min(
                                     (total_bal * self.ADA_RISK_PCT) / risk_per_unit,
-                                    (total_bal * self.leverage) / float(cl_ada.open)
+                                    (total_bal * self.ADA_LEVERAGE) / float(cl_ada.open)
                                 )
                             else:
                                 size = self.ADA_MAX_TRADE_CAP / float(cl_ada.open)
 
-                            max_size_by_free_margin = (free_bal * self.leverage) / float(cl_ada.open)
+                            # 🛡️ 先到先得：依目前其他策略持倉數決定保證金 tier
+                            _MARGIN_TIERS = [0.40, 0.20, 0.10]
+                            _open_count = (sol_s['position'] != 0) + (xrp_s['position'] != 0)
+                            max_size_by_free_margin = (total_bal * _MARGIN_TIERS[_open_count] * self.ADA_LEVERAGE) / float(cl_ada.open)
                             size = min(size, max_size_by_free_margin)
 
                             sl_dist    = max(self.ADA_ATR_SL_MULT * prev_atr, float(cl_ada.open) * self.min_sl_pct)
@@ -1099,7 +1153,7 @@ class LiveTradingBot:
                                         ada_s['stop_loss']     = ep - sl_dist       # 2.0× ATR（硬止損 + 倉位計算）
                                         ada_s['trailing_stop'] = ep - trail_dist     # 3.0× ATR（對齊回測）
                                         ada_s['highest_price'] = ep
-                                        ada_s['liq_price']     = CoreStrategy.calc_liquidation_price(ep, 1, self.leverage, self.mmr)
+                                        ada_s['liq_price']     = CoreStrategy.calc_liquidation_price(ep, 1, self.ADA_LEVERAGE, self.mmr)
                                         self.execute_order('ADA', 'sell', stop_price=ada_s['stop_loss'])
                                 else:
                                     order = self.execute_order('ADA', 'sell', size, reason="ADA Donchian 做空")
@@ -1113,7 +1167,7 @@ class LiveTradingBot:
                                         ada_s['stop_loss']     = ep + sl_dist       # 2.0× ATR（硬止損 + 倉位計算）
                                         ada_s['trailing_stop'] = ep + trail_dist     # 3.0× ATR（對齊回測）
                                         ada_s['lowest_price']  = ep
-                                        ada_s['liq_price']     = CoreStrategy.calc_liquidation_price(ep, -1, self.leverage, self.mmr)
+                                        ada_s['liq_price']     = CoreStrategy.calc_liquidation_price(ep, -1, self.ADA_LEVERAGE, self.mmr)
                                         self.execute_order('ADA', 'buy', stop_price=ada_s['stop_loss'])
 
                                 if ada_s['position'] != 0:
@@ -1147,7 +1201,7 @@ class LiveTradingBot:
                 prev_xrp = df_xrp.iloc[-2]
                 xrp_close = float(cl_xrp.close)
                 xrp_atr   = float(cl_xrp.ATR)
-                xrp_ema   = float(cl_xrp.EMA)
+                xrp_ema   = float(prev_xrp.EMA)
 
                 # Swing 高低點（prev_xrp 前 N 根，不含 prev_xrp 自身）
                 xrp_highs = df_xrp['high'].values
@@ -1155,10 +1209,15 @@ class LiveTradingBot:
                 xrp_closes_arr = df_xrp['close'].values
                 prev_xrp_idx = len(df_xrp) - 2
                 if prev_xrp_idx >= self.XRP_SWING_N:
-                    swing_high = float(np.max(xrp_highs[prev_xrp_idx - self.XRP_SWING_N:prev_xrp_idx]))
-                    swing_low  = float(np.min(xrp_lows[prev_xrp_idx - self.XRP_SWING_N:prev_xrp_idx]))
+                    _win_xh    = xrp_highs[prev_xrp_idx - self.XRP_SWING_N:prev_xrp_idx]
+                    _win_xl    = xrp_lows[prev_xrp_idx - self.XRP_SWING_N:prev_xrp_idx]
+                    swing_high = float(np.max(_win_xh))
+                    swing_low  = float(np.min(_win_xl))
+                    _xhi_idx   = int(np.argmax(_win_xh))
+                    _xlo_idx   = int(np.argmin(_win_xl))
                 else:
                     swing_high = swing_low = xrp_close
+                    _xhi_idx = _xlo_idx = 0
 
                 # ── 持倉中：監控出場 + TWAP 追加 ─────────────────
                 xrp_had_position = xrp_s['position'] != 0
@@ -1168,76 +1227,91 @@ class LiveTradingBot:
                     if xrp_s['position'] == 0:
                         self.last_candle_time['XRP'] = cl_xrp.name
 
-                # XRP TWAP 後續子單
+                # ── 限價單成交確認（每根新 K 棒檢查一次）────────────────
                 if (self.last_candle_time['XRP'] != cl_xrp.name and
-                        xrp_s['position'] != 0 and
-                        self._xrp_twap_active and self._xrp_twap_remaining > 0 and
-                        xrp_s['position'] == self._xrp_twap_direction):
-                    self.last_candle_time['XRP'] = cl_xrp.name
-                    if self.live_trade:
-                        bal_data = self.exchange.fetch_balance()
-                        free_bal = float(bal_data['free']['USDT'])
-                    else:
-                        free_bal = self.capital
-                    max_by_margin = (free_bal * self.leverage) / float(cl_xrp.open)
-                    sub_size = min(self._xrp_twap_size_each, max_by_margin)
-                    if sub_size > 0:
-                        side = 'buy' if xrp_s['position'] == 1 else 'sell'
-                        if self.live_trade:
-                            try:
-                                sub_size_str = self.exchange.amount_to_precision('XRP/USDT', sub_size)
-                                order = self.exchange.create_order('XRP/USDT', 'market', side, sub_size_str)
-                                sub_ep = float(order.get('average') or cl_xrp.open)
-                            except Exception as e:
-                                print(f"⚠️ XRP TWAP 子單失敗: {e}")
-                                sub_ep = None
-                        else:
-                            print(f"[模擬] XRP TWAP 追加 | {side.upper()} | size={sub_size:.2f} | 剩餘 {self._xrp_twap_remaining}")
-                            sub_ep = float(cl_xrp.open)
-                        if sub_ep is not None:
-                            total_sz = xrp_s['position_size'] + sub_size
-                            xrp_s['entry_price']   = (xrp_s['entry_price'] * xrp_s['position_size'] + sub_ep * sub_size) / total_sz
-                            xrp_s['position_size'] = total_sz
-                            xrp_s['liq_price']     = CoreStrategy.calc_liquidation_price(
-                                xrp_s['entry_price'], xrp_s['position'], self.leverage, self.mmr)
-                            self._xrp_twap_remaining -= 1
-                            if self._xrp_twap_remaining == 0:
-                                self._xrp_twap_active = False
-                            self.send_discord_msg(
-                                f"📦 XRP TWAP 子單 | 均價 {xrp_s['entry_price']:.4f} | "
-                                f"總量 {xrp_s['position_size']:.2f} | 剩餘 {self._xrp_twap_remaining} 筆")
+                        xrp_s['position'] == 0 and
+                        self._xrp_limit_order_id is not None):
+                    filled_price = None
 
-                # ── 空倉入場：Fib 回撤 ──────────────────────────
+                    if self.live_trade:
+                        # 向交易所查詢訂單狀態
+                        try:
+                            ord_info = self.exchange.fetch_order(self._xrp_limit_order_id, 'XRP/USDT')
+                            if ord_info['status'] == 'closed':
+                                filled_price = float(ord_info.get('average') or ord_info.get('price') or self._xrp_limit_price)
+                        except Exception as e:
+                            print(f"⚠️ XRP 限價單查詢失敗: {e}")
+                            # 訂單不存在（已被成交或外部取消）→ 清除掛單狀態，避免無限重試
+                            if any(k in str(e) for k in ['-2013', 'does not exist', 'order not found', 'Order does not exist']):
+                                print("⚠️ XRP 限價單不存在，清除掛單狀態")
+                                self._xrp_limit_order_id  = None
+                                self._xrp_limit_price     = 0.0
+                                self._xrp_limit_direction = 0
+                                self._xrp_limit_size      = 0.0
+                                self.save_order_state()
+                    else:
+                        # 模擬：用前一根 K 棒的 L/H 判斷是否成交
+                        p_L = float(prev_xrp.low)
+                        p_H = float(prev_xrp.high)
+                        if self._xrp_limit_direction == 1 and p_L <= self._xrp_limit_price:
+                            filled_price = self._xrp_limit_price
+                        elif self._xrp_limit_direction == -1 and p_H >= self._xrp_limit_price:
+                            filled_price = self._xrp_limit_price
+
+                    if filled_price is not None:
+                        # 限價單成交 → 建立倉位
+                        ep = filled_price
+                        prev_atr   = float(prev_xrp.ATR)
+                        sl_dist    = max(self.XRP_ATR_SL_MULT * prev_atr, ep * self.min_sl_pct)
+                        trail_dist = max(self.XRP_TRAIL_ATR  * prev_atr, ep * self.min_sl_pct)
+                        xrp_s['position']      = self._xrp_limit_direction
+                        xrp_s['position_size'] = self._xrp_limit_size
+                        xrp_s['entry_price']   = ep
+                        if self._xrp_limit_direction == 1:
+                            xrp_s['stop_loss']     = ep - sl_dist
+                            xrp_s['trailing_stop'] = ep - trail_dist
+                            xrp_s['highest_price'] = ep
+                        else:
+                            xrp_s['stop_loss']     = ep + sl_dist
+                            xrp_s['trailing_stop'] = ep + trail_dist
+                            xrp_s['lowest_price']  = ep
+                        xrp_s['liq_price'] = CoreStrategy.calc_liquidation_price(ep, self._xrp_limit_direction, self.XRP_LEVERAGE, self.mmr)
+                        # 掛硬性止損
+                        sl_side = 'sell' if self._xrp_limit_direction == 1 else 'buy'
+                        self.execute_order('XRP', sl_side, stop_price=xrp_s['stop_loss'])
+                        # 清除掛單狀態
+                        self._xrp_limit_order_id  = None
+                        self._xrp_limit_price     = 0.0
+                        self._xrp_limit_direction = 0
+                        self._xrp_limit_size      = 0.0
+                        self.save_order_state()
+                        now_tw = datetime.now(timezone.utc) + timedelta(hours=8)
+                        msg = (
+                            f"✅ **XRP 限價單成交** | {'做多' if xrp_s['position']==1 else '做空'}\n"
+                            f"   成交: {ep:.4f} | SL: {xrp_s['stop_loss']:.4f}\n"
+                            f"   size: {xrp_s['position_size']:.2f}"
+                        )
+                        print(f"[{now_tw.strftime('%H:%M:%S')}] {msg}")
+                        self.send_discord_msg(msg)
+
+                # ── 空倉掛限價單：Fib 水平（方案A：無確認）────────────
                 if self.last_candle_time['XRP'] is None:
                     self.last_candle_time['XRP'] = cl_xrp.name
                 elif self.last_candle_time['XRP'] != cl_xrp.name and xrp_s['position'] == 0 and not xrp_had_position:
                     self.last_candle_time['XRP'] = cl_xrp.name
 
                     swing_range = swing_high - swing_low
-                    direction = 0
+                    direction   = 0
+                    fib_price   = 0.0
 
+                    p_C = float(prev_xrp.close)
                     if swing_range > 0 and xrp_atr > 0:
-                        # 用已收盤 K 棒（prev_xrp）判斷 Fib 觸及
-                        p_C = float(prev_xrp.close)
-                        p_L = float(prev_xrp.low)
-                        p_H = float(prev_xrp.high)
-                        # 前前根的資料（Fib 觸及判斷用前一根）
-                        prev2_idx = prev_xrp_idx - 1
-                        if prev2_idx >= 0:
-                            p2_C = float(xrp_closes_arr[prev2_idx])
-                            p2_L = float(xrp_lows[prev2_idx])
-                            p2_H = float(xrp_highs[prev2_idx])
-
-                            if p_C > xrp_ema:  # 多頭回撤
-                                fib_price = swing_high - self.XRP_FIB_LEVEL * swing_range
-                                tol = fib_price * self.XRP_FIB_TOL
-                                if p2_L <= fib_price + tol and p2_C > fib_price:
-                                    direction = 1
-                            elif p_C < xrp_ema:  # 空頭反彈
-                                fib_price = swing_low + self.XRP_FIB_LEVEL * swing_range
-                                tol = fib_price * self.XRP_FIB_TOL
-                                if p2_H >= fib_price - tol and p2_C < fib_price:
-                                    direction = -1
+                        if p_C > xrp_ema and _xhi_idx > _xlo_idx:   # 上升趨勢
+                            fib_price = swing_high - self.XRP_FIB_LEVEL * swing_range
+                            direction = 1
+                        elif p_C < xrp_ema and _xlo_idx > _xhi_idx:  # 下降趨勢
+                            fib_price = swing_low + self.XRP_FIB_LEVEL * swing_range
+                            direction = -1
 
                     # 熔斷邏輯
                     if xrp_s['skip_next_trade']:
@@ -1246,13 +1320,52 @@ class LiveTradingBot:
                             xrp_s['in_skip_zone']    = True
                             self.save_order_state()
                             self.send_discord_msg("🛡️ XRP 熔斷保護觸發，進入免疫區間")
+                        direction = 0  # 熔斷期間不下單
                     elif xrp_s['in_skip_zone']:
                         if direction == 0:
                             xrp_s['in_skip_zone'] = False
                             self.save_order_state()
                             print("🔓 XRP 熔斷解除")
-                    elif direction != 0 and (time.time() - self._close_time.get('XRP', 0)) >= 60:
-                        prev_atr = float(prev_xrp.ATR)
+                        direction = 0  # 免疫區間不下單
+
+                    # 平倉後 60 秒內不重新下單
+                    if (time.time() - self._close_time.get('XRP', 0)) < 60:
+                        direction = 0
+
+                    # ── 取消方向相反或無效的舊掛單 ─────────────────────
+                    if self._xrp_limit_order_id is not None:
+                        if direction == 0 or direction != self._xrp_limit_direction:
+                            # 趨勢反轉或消失 → 取消掛單
+                            if self.live_trade:
+                                try:
+                                    self.exchange.cancel_order(self._xrp_limit_order_id, 'XRP/USDT')
+                                    print(f"🗑️ XRP 限價單取消（趨勢改變）")
+                                except Exception as e:
+                                    print(f"⚠️ XRP 限價單取消失敗: {e}")
+                            else:
+                                print(f"[模擬] XRP 限價單取消（趨勢改變）")
+                            self._xrp_limit_order_id  = None
+                            self._xrp_limit_price     = 0.0
+                            self._xrp_limit_direction = 0
+                            self._xrp_limit_size      = 0.0
+                            self.save_order_state()
+                        elif abs(fib_price - self._xrp_limit_price) / self._xrp_limit_price > self.XRP_FIB_TOL * 2:
+                            # Fib 水平偏移超過容差 → 取消後重新掛
+                            if self.live_trade:
+                                try:
+                                    self.exchange.cancel_order(self._xrp_limit_order_id, 'XRP/USDT')
+                                except Exception:
+                                    pass
+                            # 清除舊掛單狀態並持久化，避免重啟後帶著失效 ID
+                            self._xrp_limit_order_id  = None
+                            self._xrp_limit_price     = 0.0
+                            self._xrp_limit_direction = 0
+                            self._xrp_limit_size      = 0.0
+                            self.save_order_state()
+
+                    # ── 掛新限價單（無掛單且方向有效）──────────────────
+                    if direction != 0 and self._xrp_limit_order_id is None and fib_price > 0:
+                        prev_atr      = float(prev_xrp.ATR)
                         risk_per_unit = self.XRP_ATR_SL_MULT * prev_atr
                         if risk_per_unit > 0:
                             if self.live_trade:
@@ -1262,69 +1375,43 @@ class LiveTradingBot:
                             else:
                                 total_bal = free_bal = self.capital
 
-                            _N = max(1, int(total_bal * self.leverage / self.XRP_MAX_TRADE_CAP))
-                            if _N == 1:
-                                size = min(
-                                    (total_bal * self.XRP_RISK_PCT) / risk_per_unit,
-                                    (total_bal * self.leverage) / float(cl_xrp.open)
-                                )
-                            else:
-                                size = self.XRP_MAX_TRADE_CAP / float(cl_xrp.open)
-
-                            max_size_by_free_margin = (free_bal * self.leverage) / float(cl_xrp.open)
-                            size = min(size, max_size_by_free_margin)
-
-                            sl_dist    = max(self.XRP_ATR_SL_MULT * prev_atr, float(cl_xrp.open) * self.min_sl_pct)
-                            trail_dist = max(self.XRP_TRAIL_ATR * prev_atr, float(cl_xrp.open) * self.min_sl_pct)
+                            # 🛡️ 先到先得：依目前其他策略持倉數決定保證金 tier
+                            _MARGIN_TIERS = [0.40, 0.20, 0.10]
+                            _open_count = (sol_s['position'] != 0) + (ada_s['position'] != 0)
+                            size = min(
+                                (total_bal * self.XRP_RISK_PCT) / risk_per_unit,
+                                (total_bal * _MARGIN_TIERS[_open_count] * self.XRP_LEVERAGE) / fib_price
+                            )
 
                             if size > 0:
+                                side = 'buy' if direction == 1 else 'sell'
                                 now_tw = datetime.now(timezone.utc) + timedelta(hours=8)
-                                print(f"[{now_tw.strftime('%H:%M:%S')}] 🟢 XRP Fib 訊號 | "
-                                      f"{'做多' if direction == 1 else '做空'} | "
-                                      f"Fib: {fib_price:.4f} | Swing: {swing_high:.4f}/{swing_low:.4f}")
 
-                                if direction == 1:
-                                    order = self.execute_order('XRP', 'buy', size, reason="XRP Fib 做多")
-                                    if order is None:
-                                        print("⚠️ XRP 做多市價單失敗，放棄本次進場")
-                                    else:
-                                        ep = float(order.get('average') or cl_xrp.open)
-                                        xrp_s['position']      = 1
-                                        xrp_s['position_size'] = size
-                                        xrp_s['entry_price']   = ep
-                                        xrp_s['stop_loss']     = ep - sl_dist
-                                        xrp_s['trailing_stop'] = ep - trail_dist
-                                        xrp_s['highest_price'] = ep
-                                        xrp_s['liq_price']     = CoreStrategy.calc_liquidation_price(ep, 1, self.leverage, self.mmr)
-                                        self.execute_order('XRP', 'sell', stop_price=xrp_s['stop_loss'])
+                                if self.live_trade:
+                                    try:
+                                        size_str  = self.exchange.amount_to_precision('XRP/USDT', size)
+                                        price_str = self.exchange.price_to_precision('XRP/USDT', fib_price)
+                                        order = self.exchange.create_order('XRP/USDT', 'limit', side, size_str, price_str)
+                                        self._xrp_limit_order_id = order['id']
+                                    except Exception as e:
+                                        print(f"⚠️ XRP 限價單掛出失敗: {e}")
+                                        self._xrp_limit_order_id = None
                                 else:
-                                    order = self.execute_order('XRP', 'sell', size, reason="XRP Fib 做空")
-                                    if order is None:
-                                        print("⚠️ XRP 做空市價單失敗，放棄本次進場")
-                                    else:
-                                        ep = float(order.get('average') or cl_xrp.open)
-                                        xrp_s['position']      = -1
-                                        xrp_s['position_size'] = size
-                                        xrp_s['entry_price']   = ep
-                                        xrp_s['stop_loss']     = ep + sl_dist
-                                        xrp_s['trailing_stop'] = ep + trail_dist
-                                        xrp_s['lowest_price']  = ep
-                                        xrp_s['liq_price']     = CoreStrategy.calc_liquidation_price(ep, -1, self.leverage, self.mmr)
-                                        self.execute_order('XRP', 'buy', stop_price=xrp_s['stop_loss'])
+                                    self._xrp_limit_order_id = 'pending'
 
-                                if xrp_s['position'] != 0:
-                                    self._xrp_twap_direction = xrp_s['position']
-                                    self._xrp_twap_size_each = (self.XRP_MAX_TRADE_CAP / xrp_s['entry_price']) if _N > 1 else size
-                                    self._xrp_twap_remaining = _N - 1
-                                    self._xrp_twap_active    = self._xrp_twap_remaining > 0
+                                if self._xrp_limit_order_id is not None:
+                                    self._xrp_limit_price     = fib_price
+                                    self._xrp_limit_direction = direction
+                                    self._xrp_limit_size      = size
                                     self.save_order_state()
-
-                                    msg = (
-                                        f"🚀 **XRP Fib 進場** | {'做多' if direction==1 else '做空'}\n"
-                                        f"   進場: {xrp_s['entry_price']:.4f} | SL: {xrp_s['stop_loss']:.4f}\n"
-                                        f"   size: {xrp_s['position_size']:.2f} | TWAP剩餘: {self._xrp_twap_remaining}"
+                                    print(f"[{now_tw.strftime('%H:%M:%S')}] 📋 XRP 限價單掛出 | "
+                                          f"{'做多' if direction==1 else '做空'} @ {fib_price:.4f} | "
+                                          f"size={size:.2f} | Swing: {swing_high:.4f}/{swing_low:.4f}")
+                                    self.send_discord_msg(
+                                        f"📋 **XRP 限價掛單** | {'做多' if direction==1 else '做空'}\n"
+                                        f"   掛單: {fib_price:.4f} | size: {size:.2f}\n"
+                                        f"   Swing: {swing_high:.4f} / {swing_low:.4f}"
                                     )
-                                    self.send_discord_msg(msg)
 
                 # 狀態列印：每逢整 5 分鐘（:00, :05, :10 ...）印一次
                 now_tw = datetime.now(timezone.utc) + timedelta(hours=8)
