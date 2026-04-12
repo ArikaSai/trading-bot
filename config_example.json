@@ -49,6 +49,20 @@
         "max_trade_cap": 200000,
         "max_consec_losses": 3
     },
+    "doge_squeeze": {
+        "symbol": "DOGE/USDT",
+        "timeframe": "1h",
+        "bb_period": 20,
+        "bb_std": 2.0,
+        "kc_period": 10,
+        "kc_mult": 1.25,
+        "mom_period": 12,
+        "trail_atr": 3.5,
+        "atr_sl_mult": 2.0,
+        "leverage": 1,
+        "max_trade_cap": 200000,
+        "max_consec_losses": 3
+    },
     "backtest": {
         "start_date": "2020-01-01",
         "end_date": "2026-04-11"

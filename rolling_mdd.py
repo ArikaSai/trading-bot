@@ -1,7 +1,7 @@
 """
 rolling_mdd.py
 ══════════════
-三策略聯合滾動回測 — 每月滾動，找出歷史最差區間
+四策略聯合滾動回測 — 每月滾動，找出歷史最差區間
 
 用法:
     python rolling_mdd.py                  # 預設 3 個月窗口
@@ -26,12 +26,11 @@ def load_config(path="config.json") -> dict:
 
 
 def main():
-    parser = argparse.ArgumentParser(description='三策略聯合滾動 MDD')
+    parser = argparse.ArgumentParser(description='四策略聯合滾動 MDD')
     parser.add_argument('--window', type=int, default=3, help='滾動窗口（月）')
     args = parser.parse_args()
 
     WINDOW = args.window
-    scheme_label = '可用×40% 直接用'
 
     config = load_config()
     initial_cap = config['risk']['initial_capital']
@@ -49,8 +48,8 @@ def main():
         freq='MS'
     )
 
-    print(f"三策略聯合滾動 MDD")
-    print(f"  方案: {scheme_label} | 窗口: {WINDOW} 個月")
+    print(f"四策略聯合滾動 MDD")
+    print(f"  方案: 可用×40% 直接用 | 窗口: {WINDOW} 個月")
     print(f"  期間: {first_date.strftime('%Y-%m-%d')} ~ {last_date.strftime('%Y-%m-%d')}")
     print(f"  槓桿: {config['risk'].get('leverage', 2)}x | 初始: ${initial_cap}")
     print(f"  共 {len(starts)} 個滾動窗口\n")
@@ -59,7 +58,6 @@ def main():
     for j, s in enumerate(starts, 1):
         e = s + pd.DateOffset(months=WINDOW)
 
-        # 臨時修改 config 的回測日期
         cfg = json.loads(json.dumps(config))
         cfg['backtest'] = {
             'start_date': s.strftime('%Y-%m-%d'),
@@ -67,23 +65,24 @@ def main():
         }
 
         try:
-            r = run_triple(cfg, label=f"{s.strftime('%Y-%m')} ~ {e.strftime('%Y-%m')}", scheme='free_b')
+            r = run_triple(cfg, label=f"{s.strftime('%Y-%m')} ~ {e.strftime('%Y-%m')}")
         except Exception as ex:
             print(f"  [{j}/{len(starts)}] {s.strftime('%Y-%m')} 跳過: {ex}")
             continue
 
         results.append({
-            'Start':     s.strftime('%Y-%m-%d'),
-            'End':       e.strftime('%Y-%m-%d'),
-            'Trades':    r['all_n'],
-            'Return_%':  round(r['ret%'], 1),
-            'MDD_%':     round(r['mdd%'], 1),
-            'Sharpe':    round(r['sharpe'], 3),
-            'PF':        round(r['all_pf'], 2),
-            'Final':     round(r['final'], 2),
-            'SOL_n':     r['sol_n'],
-            'ADA_n':     r['ada_n'],
-            'XRP_n':     r['xrp_n'],
+            'Start':    s.strftime('%Y-%m-%d'),
+            'End':      e.strftime('%Y-%m-%d'),
+            'Trades':   r['all_n'],
+            'Return_%': round(r['ret%'], 1),
+            'MDD_%':    round(r['mdd%'], 1),
+            'Sharpe':   round(r['sharpe'], 3),
+            'PF':       round(r['all_pf'], 2),
+            'Final':    round(r['final'], 2),
+            'SOL_n':    r['sol_n'],
+            'ADA_n':    r['ada_n'],
+            'XRP_n':    r['xrp_n'],
+            'DOGE_n':   r['doge_n'],
         })
 
         if j % 5 == 0 or j == len(starts):
@@ -99,7 +98,7 @@ def main():
     rdf_sorted = rdf.sort_values('MDD_%').reset_index(drop=True)
 
     print(f"\n{'='*90}")
-    print(f"  滾動 MDD 排名（{WINDOW} 個月窗口，方案 {scheme_label}）")
+    print(f"  滾動 MDD 排名（{WINDOW} 個月窗口，可用×40%）")
     print(f"{'='*90}")
     print(f"{'#':>3}  {'起始':<12} {'結束':<12} {'交易':>5} {'報酬%':>9} {'MDD%':>8} {'PF':>6} {'Sharpe':>7}")
     print("-" * 75)
@@ -126,7 +125,7 @@ def main():
     # ── 繪圖 ─────────────────────────────────────────────────
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(16, 9), sharex=True)
 
-    x_dates = pd.to_datetime(rdf['Start'])
+    x_dates   = pd.to_datetime(rdf['Start'])
     mdd_colors = ['#e74c3c' if m < -30 else '#f39c12' if m < -15 else '#2ecc71'
                   for m in rdf['MDD_%']]
 
@@ -135,7 +134,7 @@ def main():
                 label=f"平均 {rdf['MDD_%'].mean():.1f}%")
     ax1.axhline(-40, color='red', linestyle=':', linewidth=1, label='警戒線 -40%')
     ax1.set_ylabel('最大回撤 %')
-    ax1.set_title(f'三策略聯合 {WINDOW}M 滾動 MDD（方案 {scheme_label}）', fontsize=13, fontweight='bold')
+    ax1.set_title(f'四策略聯合 {WINDOW}M 滾動 MDD（可用×40%）', fontsize=13, fontweight='bold')
     ax1.legend()
     ax1.grid(True, alpha=0.3)
 
@@ -143,7 +142,7 @@ def main():
     ax2.bar(x_dates, rdf['Return_%'].values, width=25, color=ret_colors, alpha=0.8)
     ax2.axhline(0, color='black', linewidth=0.5)
     ax2.set_ylabel('報酬率 %')
-    ax2.set_title(f'三策略聯合 {WINDOW}M 滾動報酬', fontsize=13, fontweight='bold')
+    ax2.set_title(f'四策略聯合 {WINDOW}M 滾動報酬', fontsize=13, fontweight='bold')
     ax2.grid(True, alpha=0.3)
 
     fig.autofmt_xdate()
@@ -155,4 +154,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-    

@@ -1,17 +1,13 @@
 """
 backtest_triple.py
 ══════════════════
-SOL 趨勢 + ADA 唐奇安 + XRP 斐波  三策略共用資金聯合回測
+SOL 趨勢 + ADA 唐奇安 + XRP 斐波 + DOGE Squeeze  四策略共用資金聯合回測
 
-時間軸：SOL 15m + ADA 1h + XRP 1h 合併排序
-資金池：共享，先到先得，各策略按保證金比例上限開倉
-風控  ：連續虧損跳過、同時持倉統計
+資金方案：free_b（可用保證金 × 40%，直接用）
+時間軸  ：SOL 15m + ADA / XRP / DOGE 1h 合併排序
 
 用法:
-    python backtest_triple.py                  # 三種方案全比較
-    python backtest_triple.py --scheme tier    # 只跑現行先到先得
-    python backtest_triple.py --scheme free_a  # 可用×40% + 風險限
-    python backtest_triple.py --scheme free_b  # 可用×40% 直接用
+    python backtest_triple.py
 """
 
 import argparse
@@ -28,8 +24,9 @@ warnings.filterwarnings('ignore')
 plt.rcParams['font.sans-serif'] = ['Microsoft JhengHei']
 plt.rcParams['axes.unicode_minus'] = False
 
-SLIPPAGE          = 0.001
-MAX_POSITION_CAP  = 100_000_000.0   # SOL 幣安最大持倉名目價值
+SLIPPAGE         = 0.001
+MAX_POSITION_CAP = 100_000_000.0   # SOL 幣安最大持倉名目價值
+_FREE_PCT        = 0.40            # 每次取可用保證金的固定 40%
 
 
 def load_config(path="config.json") -> dict:
@@ -47,54 +44,44 @@ def load_csv(symbol: str, timeframe: str) -> pd.DataFrame:
     return df
 
 
-_MARGIN_TIERS = [0.40, 0.20, 0.10]   # 先到先得：第1/2/3個進場的策略分別拿 40/20/10%
-_FREE_PCT     = 0.40                  # free_margin 方案：每次取可用保證金的固定 40%
-
-
-def run_triple(config, label: str = "", scheme: str = 'tier'):
-    """
-    scheme:
-      'tier'   — 先到先得 40/20/10% of total_bal（現行）
-      'free_a' — free_margin × 40%，再和風險計算取小
-      'free_b' — free_margin × 40%，直接當倉位上限
-    """
+def run_triple(config, label: str = ""):
     # ── 載入資料 ─────────────────────────────────────────────
-    sol_tf = config['trading'].get('timeframe', '15m')
-    df_sol = load_csv('SOL', sol_tf)
-    df_ada = load_csv('ADA', '1h')
-    df_xrp = load_csv('XRP', '1h')
+    sol_tf  = config['trading'].get('timeframe', '15m')
+    df_sol  = load_csv('SOL',  sol_tf)
+    df_ada  = load_csv('ADA',  '1h')
+    df_xrp  = load_csv('XRP',  '1h')
+    df_doge = load_csv('DOGE', '1h')
 
     # ── 時間過濾 ─────────────────────────────────────────────
-    bt = config.get('backtest', {})
+    bt      = config.get('backtest', {})
     t_start = pd.Timestamp(bt.get('start_date', '2020-01-01'))
-    t_end   = pd.Timestamp(bt.get('end_date', '2026-04-09'))
-    df_sol = df_sol[(df_sol.index >= t_start) & (df_sol.index <= t_end)]
-    df_ada = df_ada[(df_ada.index >= t_start) & (df_ada.index <= t_end)]
-    df_xrp = df_xrp[(df_xrp.index >= t_start) & (df_xrp.index <= t_end)]
+    t_end   = pd.Timestamp(bt.get('end_date',   '2026-04-09'))
+    df_sol  = df_sol[ (df_sol.index  >= t_start) & (df_sol.index  <= t_end)]
+    df_ada  = df_ada[ (df_ada.index  >= t_start) & (df_ada.index  <= t_end)]
+    df_xrp  = df_xrp[ (df_xrp.index  >= t_start) & (df_xrp.index  <= t_end)]
+    df_doge = df_doge[(df_doge.index >= t_start) & (df_doge.index <= t_end)]
 
     # ── 共用參數 ─────────────────────────────────────────────
     initial_cap = config['risk']['initial_capital']
-    leverage    = config['risk'].get('leverage', 2)
     fee_rate    = config['risk'].get('taker_fee_rate', 0.0005)
 
     # SOL 趨勢參數
-    sol_adx_th   = config['strategy']['adx_threshold']
+    sol_adx_th    = config['strategy']['adx_threshold']
     sol_trail_atr = config['strategy']['trailing_atr']
-    sol_sl_atr   = config['strategy']['initial_sl_atr']
-    sol_risk     = config['risk']['risk_per_trade']
-    sol_max_pos  = config['risk']['max_pos_ratio']
-    sol_leverage = leverage
-    sol_max_cap  = config['risk'].get('max_trade_usdt_cap', 200000.0)
-    sol_max_loss = config['risk'].get('max_consec_losses', 3)
-    sol_fee      = fee_rate
-    sol_mmr      = config['risk'].get('maintenance_margin_rate', 0.005)
+    sol_sl_atr    = config['strategy']['initial_sl_atr']
+    sol_risk      = config['risk']['risk_per_trade']
+    sol_max_pos   = config['risk']['max_pos_ratio']
+    sol_leverage  = config['risk'].get('leverage', 2)
+    sol_max_cap   = config['risk'].get('max_trade_usdt_cap', 200000.0)
+    sol_max_loss  = config['risk'].get('max_consec_losses', 3)
+    sol_fee       = fee_rate
+    sol_mmr       = config['risk'].get('maintenance_margin_rate', 0.005)
 
     # ADA 唐奇安參數
     ada_cfg      = config['ada_donchian']
     ada_entry_n  = ada_cfg['entry_n']
     ada_trail    = ada_cfg['trail_atr']
-    ada_sl_mult  = ada_cfg['atr_sl_mult']
-    ada_risk     = ada_cfg.get('risk_pct', 0.15)
+    ada_leverage = ada_cfg.get('leverage', 1)
     ada_max_cap  = ada_cfg.get('max_trade_cap', 200000.0)
     ada_max_loss = ada_cfg.get('max_consec_losses', 3)
     ada_fee      = fee_rate
@@ -105,20 +92,62 @@ def run_triple(config, label: str = "", scheme: str = 'tier'):
     xrp_fib_level = xrp_cfg.get('fib_level', 0.618)
     xrp_trail     = xrp_cfg.get('trail_atr', 3.0)
     xrp_fib_tol   = xrp_cfg.get('fib_tol', 0.005)
-    xrp_sl_mult   = xrp_cfg.get('atr_sl_mult', 2.0)
-    xrp_risk      = xrp_cfg.get('risk_pct', 0.15)
+    xrp_leverage  = xrp_cfg.get('leverage', 1)
     xrp_max_cap   = xrp_cfg.get('max_trade_cap', 200000.0)
     xrp_max_loss  = xrp_cfg.get('max_consec_losses', 3)
     xrp_fee       = fee_rate
 
-    # 保證金 tier（先到先得，進場時動態決定）
+    # DOGE Squeeze 參數
+    doge_cfg        = config.get('doge_squeeze', {})
+    doge_bb_period  = doge_cfg.get('bb_period',        20)
+    doge_bb_std_v   = doge_cfg.get('bb_std',           2.0)
+    doge_kc_period  = doge_cfg.get('kc_period',        10)
+    doge_kc_mult_v  = doge_cfg.get('kc_mult',          1.25)
+    doge_mom_period = doge_cfg.get('mom_period',        12)
+    doge_trail      = doge_cfg.get('trail_atr',         3.5)
+    doge_atr_sl     = doge_cfg.get('atr_sl_mult',       2.0)
+    doge_leverage   = doge_cfg.get('leverage',          1)
+    doge_max_cap    = doge_cfg.get('max_trade_cap',     200000.0)
+    doge_max_loss   = doge_cfg.get('max_consec_losses', 3)
+    doge_fee        = fee_rate
 
-    # ── 建立統一時間軸 ───────────────────────────────────────
-    all_ts = sorted(set(list(df_sol.index) + list(df_ada.index) + list(df_xrp.index)))
+    # ── DOGE Squeeze 指標計算 ────────────────────────────────
+    _dc = df_doge['close']
+    _dh = df_doge['high']
+    _dl = df_doge['low']
+    _bb_mid   = _dc.rolling(doge_bb_period).mean()
+    _bb_std   = _dc.rolling(doge_bb_period).std(ddof=0)
+    _bb_upper = _bb_mid + doge_bb_std_v * _bb_std
+    _bb_lower = _bb_mid - doge_bb_std_v * _bb_std
+    _tr = pd.concat([
+        _dh - _dl,
+        (_dh - _dc.shift(1)).abs(),
+        (_dl - _dc.shift(1)).abs(),
+    ], axis=1).max(axis=1)
+    _d_atr    = _tr.rolling(doge_kc_period).mean()
+    _kc_mid   = _dc.rolling(doge_kc_period).mean()
+    _kc_upper = _kc_mid + doge_kc_mult_v * _d_atr
+    _kc_lower = _kc_mid - doge_kc_mult_v * _d_atr
+    _sq       = ((_bb_upper < _kc_upper) & (_bb_lower > _kc_lower)).astype(int)
+    _rl_hi    = _dh.rolling(doge_mom_period).max()
+    _rl_lo    = _dl.rolling(doge_mom_period).min()
+    _mom      = _dc - ((_rl_hi + _rl_lo) / 2 + _kc_mid) / 2
+    df_doge           = df_doge.copy()
+    df_doge['_atr']   = _d_atr
+    df_doge['_sq']    = _sq
+    df_doge['_mom']   = _mom
+    df_doge.dropna(inplace=True)
 
-    sol_dict = {row.Index: row for row in df_sol.itertuples()}
-    ada_dict = {row.Index: row for row in df_ada.itertuples()}
-    xrp_dict = {row.Index: row for row in df_xrp.itertuples()}
+    # ── 建立查詢字典 ─────────────────────────────────────────
+    sol_dict  = {row.Index: row for row in df_sol.itertuples()}
+    ada_dict  = {row.Index: row for row in df_ada.itertuples()}
+    xrp_dict  = {row.Index: row for row in df_xrp.itertuples()}
+    doge_dict = {row.Index: row for row in df_doge.itertuples()}
+
+    all_ts = sorted(set(
+        list(df_sol.index) + list(df_ada.index) +
+        list(df_xrp.index) + list(df_doge.index)
+    ))
 
     # ADA Donchian 預計算
     ada_highs = df_ada['high'].values
@@ -133,12 +162,19 @@ def run_triple(config, label: str = "", scheme: str = 'tier'):
     xrp_idx    = df_xrp.index
     xrp_i_map  = {ts: i for i, ts in enumerate(xrp_idx)}
 
+    # DOGE Squeeze 陣列
+    doge_sq_arr  = df_doge['_sq'].values
+    doge_mom_arr = df_doge['_mom'].values
+    doge_atr_arr = df_doge['_atr'].values
+    doge_idx     = df_doge.index
+    doge_i_map   = {ts: i for i, ts in enumerate(doge_idx)}
+
     # ── 共享資金 ─────────────────────────────────────────────
     capital = initial_cap
 
     # ── SOL 狀態 ─────────────────────────────────────────────
     sol_pos = 0; sol_size = 0.0; sol_entry = 0.0
-    sol_sl = 0.0; sol_trail = 0.0; sol_liq = 0.0
+    sol_sl = 0.0; sol_tsl = 0.0; sol_liq = 0.0
     sol_high = 0.0; sol_low = float('inf')
     sol_init_risk = 0.0; sol_entry_fee = 0.0
     sol_long_sig = False; sol_short_sig = False
@@ -147,15 +183,10 @@ def run_triple(config, label: str = "", scheme: str = 'tier'):
     sol_saved_sl_dist = 0.0
     sol_margin_used = 0.0
     sol_trades = []
-
-    # SOL TWAP
     sol_twap_active = False; sol_twap_remaining = 0
     sol_twap_size_each = 0.0; sol_twap_direction = 0
-
-    # SOL 盤整縮緊
     _sol_consol_highs = _deque(maxlen=8)
     _sol_consol_lows  = _deque(maxlen=8)
-
     prev_sol_ts = None
 
     # ── ADA 狀態 ─────────────────────────────────────────────
@@ -164,28 +195,32 @@ def run_triple(config, label: str = "", scheme: str = 'tier'):
     ada_entry_fee = 0.0; ada_margin_used = 0.0
     ada_consec = 0; ada_skip = False; ada_in_skip = False
     ada_trades = []
-
-    # ADA TWAP
     ada_twap_active = False; ada_twap_remaining = 0
     ada_twap_size_each = 0.0; ada_twap_direction = 0
     ada_twap_pending = False
 
-    # ── XRP 狀態 ─────────────────────────────────────────────
+    # ── XRP 狀態（限價進場，直接 pending） ───────────────────
     xrp_pos = 0; xrp_size = 0.0; xrp_entry = 0.0
     xrp_tsl = 0.0; xrp_hp = 0.0; xrp_lp = float('inf')
     xrp_entry_fee = 0.0; xrp_margin_used = 0.0
     xrp_consec = 0; xrp_skip = False; xrp_in_skip = False
+    xrp_pending_dir = 0
     xrp_trades = []
 
-    # XRP TWAP
-    xrp_twap_active = False; xrp_twap_remaining = 0
-    xrp_twap_size_each = 0.0; xrp_twap_direction = 0
-    xrp_twap_pending = False
+    # ── DOGE 狀態 ─────────────────────────────────────────────
+    doge_pos = 0; doge_size = 0.0; doge_entry = 0.0
+    doge_tsl = 0.0; doge_hp = 0.0; doge_lp = float('inf')
+    doge_entry_fee = 0.0; doge_margin_used = 0.0
+    doge_consec = 0; doge_skip = False; doge_in_skip = False
+    doge_trades = []
+    doge_twap_active = False; doge_twap_remaining = 0
+    doge_twap_size_each = 0.0; doge_twap_direction = 0
+    doge_twap_pending = False
 
     # ── 淨值 / 統計 ─────────────────────────────────────────
     equity_curve = []
     peak = initial_cap; max_dd = 0.0
-    simul_2 = 0; simul_3 = 0
+    simul_2 = 0; simul_3 = 0; simul_4 = 0
 
     # ══════════════════════════════════════════════════════════
     #  主循環
@@ -195,9 +230,10 @@ def run_triple(config, label: str = "", scheme: str = 'tier'):
             equity_curve.append({'timestamp': ts, 'equity': 0.0})
             continue
 
-        is_sol = ts in sol_dict
-        is_ada = ts in ada_dict
-        is_xrp = ts in xrp_dict
+        is_sol  = ts in sol_dict
+        is_ada  = ts in ada_dict
+        is_xrp  = ts in xrp_dict
+        is_doge = ts in doge_dict
 
         # ══════════════════════════════════════════════════════
         #  SOL 15m 事件
@@ -208,16 +244,11 @@ def run_triple(config, label: str = "", scheme: str = 'tier'):
             cur_low   = float(row.low);   cur_close = float(row.close)
             cur_atr   = float(row.ATR)
 
-            # ── 進場執行（上一根產生信號，本根開盤執行）──────
+            # ── 進場執行（上一根訊號，本根開盤執行）──────────
             if sol_pos == 0 and (sol_long_sig or sol_short_sig):
-                other_margin = ada_margin_used + xrp_margin_used
+                other_margin = ada_margin_used + xrp_margin_used + doge_margin_used
                 free_margin  = max(0.0, capital - other_margin)
-
-                if scheme == 'tier':
-                    _open_count  = (ada_pos != 0) + (xrp_pos != 0)
-                    alloc_margin = capital * _MARGIN_TIERS[_open_count]
-                else:  # free_a / free_b
-                    alloc_margin = free_margin * _FREE_PCT
+                alloc_margin = free_margin * _FREE_PCT
 
                 sl_dist = sol_saved_sl_dist if sol_saved_sl_dist > 0 else max(sol_sl_atr * cur_atr, cur_open * 0.001)
                 sol_saved_sl_dist = 0.0
@@ -225,36 +256,28 @@ def run_triple(config, label: str = "", scheme: str = 'tier'):
                 if sol_twap_active and sol_twap_remaining > 0:
                     sol_size      = sol_twap_size_each
                     sol_init_risk = sol_twap_remaining * sol_twap_size_each * sl_dist
-                elif scheme == 'free_b':
+                else:
                     sol_size      = alloc_margin * sol_leverage / cur_open
                     sol_init_risk = sol_size * sl_dist
-                else:  # tier / free_a
-                    sol_size, sol_init_risk = CoreStrategy.calculate_position_size(
-                        capital, sol_risk, sl_dist, cur_open,
-                        sol_max_pos, sol_leverage, sol_max_cap
-                    )
 
-                # 保證金上限裁切
-                if scheme != 'free_b':
-                    sol_size = min(sol_size, alloc_margin * sol_leverage / cur_open)
                 sol_size = min(sol_size, max(0.0, free_margin * sol_leverage / cur_open))
 
                 if sol_size > 0:
                     if sol_long_sig:
                         sol_entry = cur_open * (1 + SLIPPAGE)
                         sol_pos   = 1
-                        sol_sl    = sol_trail = sol_entry - sl_dist
+                        sol_sl    = sol_tsl = sol_entry - sl_dist
                         sol_high  = cur_open
                         sol_liq   = CoreStrategy.calc_liquidation_price(sol_entry, 1, sol_leverage, sol_mmr)
                     else:
                         sol_entry = cur_open * (1 - SLIPPAGE)
                         sol_pos   = -1
-                        sol_sl    = sol_trail = sol_entry + sl_dist
+                        sol_sl    = sol_tsl = sol_entry + sl_dist
                         sol_low   = cur_open
                         sol_liq   = CoreStrategy.calc_liquidation_price(sol_entry, -1, sol_leverage, sol_mmr)
-                    sol_entry_fee   = sol_size * sol_entry * sol_fee
-                    capital -= sol_entry_fee
-                    sol_margin_used = sol_size * sol_entry / sol_leverage
+                    sol_entry_fee    = sol_size * sol_entry * sol_fee
+                    capital         -= sol_entry_fee
+                    sol_margin_used  = sol_size * sol_entry / sol_leverage
                     sol_be_activated = False
                     if sol_twap_active:
                         sol_twap_remaining -= 1
@@ -265,15 +288,15 @@ def run_triple(config, label: str = "", scheme: str = 'tier'):
 
             # ── SOL TWAP 後續子單 ────────────────────────────
             elif sol_pos != 0 and sol_twap_active and sol_twap_remaining > 0 and sol_pos == sol_twap_direction:
-                sub_ep      = cur_open * (1 + SLIPPAGE) if sol_pos == 1 else cur_open * (1 - SLIPPAGE)
-                sub_fee     = sol_twap_size_each * sub_ep * sol_fee
-                capital    -= sub_fee
+                sub_ep    = cur_open * (1 + SLIPPAGE) if sol_pos == 1 else cur_open * (1 - SLIPPAGE)
+                sub_fee   = sol_twap_size_each * sub_ep * sol_fee
+                capital  -= sub_fee
                 sol_entry_fee += sub_fee
-                total_sz   = sol_size + sol_twap_size_each
-                sol_entry  = (sol_entry * sol_size + sub_ep * sol_twap_size_each) / total_sz
-                sol_size   = total_sz
-                sol_liq    = CoreStrategy.calc_liquidation_price(sol_entry, sol_pos, sol_leverage, sol_mmr)
-                sol_margin_used = sol_size * sol_entry / sol_leverage
+                total_sz  = sol_size + sol_twap_size_each
+                sol_entry = (sol_entry * sol_size + sub_ep * sol_twap_size_each) / total_sz
+                sol_size  = total_sz
+                sol_liq   = CoreStrategy.calc_liquidation_price(sol_entry, sol_pos, sol_leverage, sol_mmr)
+                sol_margin_used    = sol_size * sol_entry / sol_leverage
                 sol_twap_remaining -= 1
                 if sol_twap_remaining == 0:
                     sol_twap_active = False
@@ -290,8 +313,8 @@ def run_triple(config, label: str = "", scheme: str = 'tier'):
                 is_spike = cur_atr > 0 and (cur_high - cur_low) > 4.0 * cur_atr
                 ref_high = cur_close if (is_spike and sol_pos == 1)  else cur_high
                 ref_low  = cur_close if (is_spike and sol_pos == -1) else cur_low
-                sol_trail, sol_high, sol_low = CoreStrategy.update_trailing_stop(
-                    sol_pos, sol_trail, sol_high, sol_low,
+                sol_tsl, sol_high, sol_low = CoreStrategy.update_trailing_stop(
+                    sol_pos, sol_tsl, sol_high, sol_low,
                     ref_high, ref_low, cur_atr, _eff_trail
                 )
 
@@ -300,17 +323,17 @@ def run_triple(config, label: str = "", scheme: str = 'tier'):
                 sol_sl_dist = abs(sol_entry - sol_sl)
                 if sol_pos == 1 and cur_high >= sol_entry + 2.0 * sol_sl_dist:
                     be_price  = sol_entry / ((1 - sol_fee) * (1 - SLIPPAGE))
-                    sol_trail = max(sol_trail, be_price)
+                    sol_tsl   = max(sol_tsl, be_price)
                     sol_be_activated = True
                 elif sol_pos == -1 and cur_low <= sol_entry - 2.0 * sol_sl_dist:
                     be_price  = sol_entry / ((1 + sol_fee) * (1 + SLIPPAGE))
-                    sol_trail = min(sol_trail, be_price)
+                    sol_tsl   = min(sol_tsl, be_price)
                     sol_be_activated = True
 
             # ── 出場判斷 ─────────────────────────────────────
             closed, exit_p, pnl, reason = CoreStrategy.check_exit(
                 sol_pos, cur_low, cur_high, cur_open,
-                sol_liq, sol_trail, sol_sl,
+                sol_liq, sol_tsl, sol_sl,
                 sol_entry, sol_size, sol_fee, SLIPPAGE
             )
             if closed:
@@ -320,11 +343,11 @@ def run_triple(config, label: str = "", scheme: str = 'tier'):
                     capital += pnl
                 net_pnl = pnl - sol_entry_fee
                 sol_trades.append({'Time': ts, 'Strategy': 'SOL', 'PnL': net_pnl, 'Cap': capital})
-                sol_entry_fee    = 0.0
-                sol_pos          = 0
-                sol_be_activated = False
-                sol_margin_used  = 0.0
-                sol_twap_active  = False
+                sol_entry_fee      = 0.0
+                sol_pos            = 0
+                sol_be_activated   = False
+                sol_margin_used    = 0.0
+                sol_twap_active    = False
                 sol_twap_remaining = 0
                 _sol_consol_highs.clear()
                 _sol_consol_lows.clear()
@@ -373,13 +396,12 @@ def run_triple(config, label: str = "", scheme: str = 'tier'):
         #  ADA 1h 事件
         # ══════════════════════════════════════════════════════
         if is_ada:
-            ai = ada_i_map[ts]
+            ai    = ada_i_map[ts]
             a_row = ada_dict[ts]
-            a_O = float(a_row.open);  a_H = float(a_row.high)
-            a_L = float(a_row.low);   a_C = float(a_row.close)
+            a_O   = float(a_row.open);  a_H = float(a_row.high)
+            a_L   = float(a_row.low);   a_C = float(a_row.close)
             a_atr = float(a_row.ATR)
 
-            # Donchian 通道
             if ai >= ada_entry_n:
                 dc_high = np.max(ada_highs[ai - ada_entry_n:ai])
                 dc_low  = np.min(ada_lows[ai - ada_entry_n:ai])
@@ -388,14 +410,14 @@ def run_triple(config, label: str = "", scheme: str = 'tier'):
 
             # ── ADA TWAP 第一份子單 ──────────────────────────
             if ada_pos == 0 and ada_twap_active and ada_twap_pending:
-                sub_ep = a_O * (1 + SLIPPAGE * ada_twap_direction)
+                sub_ep  = a_O * (1 + SLIPPAGE * ada_twap_direction)
                 sub_fee = ada_twap_size_each * sub_ep * ada_fee
                 capital -= sub_fee
-                ada_entry_fee = sub_fee
-                ada_pos   = ada_twap_direction
-                ada_size  = ada_twap_size_each
-                ada_entry = sub_ep
-                ada_margin_used = ada_size * ada_entry / leverage
+                ada_entry_fee   = sub_fee
+                ada_pos         = ada_twap_direction
+                ada_size        = ada_twap_size_each
+                ada_entry       = sub_ep
+                ada_margin_used = ada_size * ada_entry / ada_leverage
                 if ada_pos == 1:
                     ada_hp = a_H; ada_lp = float('inf')
                     ada_tsl = ada_entry - ada_trail * a_atr
@@ -403,7 +425,7 @@ def run_triple(config, label: str = "", scheme: str = 'tier'):
                     ada_lp = a_L; ada_hp = 0.0
                     ada_tsl = ada_entry + ada_trail * a_atr
                 ada_twap_remaining -= 1
-                ada_twap_pending = False
+                ada_twap_pending    = False
 
             # ── ADA TWAP 後續子單 ────────────────────────────
             elif ada_pos != 0 and ada_twap_active and ada_twap_remaining > 0 and ada_pos == ada_twap_direction:
@@ -411,10 +433,10 @@ def run_triple(config, label: str = "", scheme: str = 'tier'):
                 sub_fee = ada_twap_size_each * sub_ep * ada_fee
                 capital -= sub_fee
                 ada_entry_fee += sub_fee
-                total_sz = ada_size + ada_twap_size_each
+                total_sz  = ada_size + ada_twap_size_each
                 ada_entry = (ada_entry * ada_size + sub_ep * ada_twap_size_each) / total_sz
-                ada_size = total_sz
-                ada_margin_used = ada_size * ada_entry / leverage
+                ada_size  = total_sz
+                ada_margin_used    = ada_size * ada_entry / ada_leverage
                 ada_twap_remaining -= 1
 
             if ada_twap_active and ada_twap_remaining == 0 and not ada_twap_pending:
@@ -424,12 +446,12 @@ def run_triple(config, label: str = "", scheme: str = 'tier'):
             if ada_pos != 0:
                 closed_ada = False; xp = 0.0
                 if ada_pos == 1:
-                    ada_hp = max(ada_hp, a_H)
+                    ada_hp  = max(ada_hp, a_H)
                     ada_tsl = max(ada_tsl, ada_hp - ada_trail * a_atr)
                     if a_L <= ada_tsl:
                         xp = max(ada_tsl, a_O) * (1 - SLIPPAGE); closed_ada = True
                 elif ada_pos == -1:
-                    ada_lp = min(ada_lp, a_L)
+                    ada_lp  = min(ada_lp, a_L)
                     ada_tsl = min(ada_tsl, ada_lp + ada_trail * a_atr)
                     if a_H >= ada_tsl:
                         xp = min(ada_tsl, a_O) * (1 + SLIPPAGE); closed_ada = True
@@ -441,8 +463,8 @@ def run_triple(config, label: str = "", scheme: str = 'tier'):
                     capital += gross - x_fee
                     ada_trades.append({'Time': ts, 'Strategy': 'ADA', 'PnL': net, 'Cap': capital})
                     ada_pos = 0; ada_size = 0.0; ada_entry_fee = 0.0
-                    ada_margin_used = 0.0
-                    ada_twap_active = False; ada_twap_remaining = 0; ada_twap_pending = False
+                    ada_margin_used  = 0.0
+                    ada_twap_active  = False; ada_twap_remaining = 0; ada_twap_pending = False
                     if net < 0:
                         ada_consec += 1
                         if ada_consec >= ada_max_loss:
@@ -461,92 +483,63 @@ def run_triple(config, label: str = "", scheme: str = 'tier'):
                     if not has_signal:
                         ada_in_skip = False
                 elif has_signal:
-                    direction = 1 if a_C > dc_high else -1
-                    risk_per_unit = ada_sl_mult * a_atr
-                    if risk_per_unit > 0:
-                        other_margin = sol_margin_used + xrp_margin_used
-                        free_margin  = max(0.0, capital - other_margin)
+                    direction    = 1 if a_C > dc_high else -1
+                    other_margin = sol_margin_used + xrp_margin_used + doge_margin_used
+                    free_margin  = max(0.0, capital - other_margin)
 
-                        if scheme == 'tier':
-                            _open_count  = (sol_pos != 0) + (xrp_pos != 0)
-                            alloc_margin = capital * _MARGIN_TIERS[_open_count]
-                        else:  # free_a / free_b
-                            alloc_margin = free_margin * _FREE_PCT
+                    if free_margin > 10:
+                        N            = max(1, int(free_margin / ada_max_cap))
+                        alloc_margin = free_margin * _FREE_PCT
+                        size_each    = alloc_margin * ada_leverage / a_C if N == 1 else ada_max_cap / a_C
 
-                        if free_margin > 10:
-                            N = max(1, int(free_margin / ada_max_cap))
-                            if N == 1:
-                                alloc_sz = alloc_margin * leverage / a_C
-                                if scheme == 'free_b':
-                                    size_each = alloc_sz
-                                else:  # tier / free_a
-                                    raw_sz = (free_margin * ada_risk) / risk_per_unit
-                                    max_sz = free_margin * leverage / a_C
-                                    size_each = min(raw_sz, max_sz, alloc_sz)
-                            else:
-                                size_each = ada_max_cap / a_C
-
-                            ada_twap_size_each = size_each
-                            ada_twap_direction = direction
-                            ada_twap_active    = True
-                            ada_twap_remaining = N
-                            ada_twap_pending   = True
+                        ada_twap_size_each = size_each
+                        ada_twap_direction = direction
+                        ada_twap_active    = True
+                        ada_twap_remaining = N
+                        ada_twap_pending   = True
 
         # ══════════════════════════════════════════════════════
-        #  XRP 1h 事件
+        #  XRP 1h 事件（限價進場，無 TWAP）
         # ══════════════════════════════════════════════════════
         if is_xrp:
-            xi = xrp_i_map[ts]
+            xi    = xrp_i_map[ts]
             x_row = xrp_dict[ts]
-            x_O = float(x_row.open);  x_H = float(x_row.high)
-            x_L = float(x_row.low);   x_C = float(x_row.close)
+            x_O   = float(x_row.open);  x_H = float(x_row.high)
+            x_L   = float(x_row.low);   x_C = float(x_row.close)
             x_atr = float(x_row.ATR)
             x_ema = float(x_row.EMA)
 
-            # ── XRP TWAP 第一份子單 ──────────────────────────
-            if xrp_pos == 0 and xrp_twap_active and xrp_twap_pending:
-                sub_ep = x_O * (1 + SLIPPAGE * xrp_twap_direction)
-                sub_fee = xrp_twap_size_each * sub_ep * xrp_fee
-                capital -= sub_fee
-                xrp_entry_fee = sub_fee
-                xrp_pos   = xrp_twap_direction
-                xrp_size  = xrp_twap_size_each
-                xrp_entry = sub_ep
-                xrp_margin_used = xrp_size * xrp_entry / leverage
-                if xrp_pos == 1:
-                    xrp_hp = x_H; xrp_lp = float('inf')
-                    xrp_tsl = xrp_entry - xrp_trail * x_atr
-                else:
-                    xrp_lp = x_L; xrp_hp = 0.0
-                    xrp_tsl = xrp_entry + xrp_trail * x_atr
-                xrp_twap_remaining -= 1
-                xrp_twap_pending = False
-
-            # ── XRP TWAP 後續子單 ────────────────────────────
-            elif xrp_pos != 0 and xrp_twap_active and xrp_twap_remaining > 0 and xrp_pos == xrp_twap_direction:
-                sub_ep  = x_O * (1 + SLIPPAGE * xrp_pos)
-                sub_fee = xrp_twap_size_each * sub_ep * xrp_fee
-                capital -= sub_fee
-                xrp_entry_fee += sub_fee
-                total_sz = xrp_size + xrp_twap_size_each
-                xrp_entry = (xrp_entry * xrp_size + sub_ep * xrp_twap_size_each) / total_sz
-                xrp_size = total_sz
-                xrp_margin_used = xrp_size * xrp_entry / leverage
-                xrp_twap_remaining -= 1
-
-            if xrp_twap_active and xrp_twap_remaining == 0 and not xrp_twap_pending:
-                xrp_twap_active = False
+            # ── XRP 進場執行（上根斐波訊號，本根開盤執行）────
+            if xrp_pos == 0 and xrp_pending_dir != 0:
+                other_margin = sol_margin_used + ada_margin_used + doge_margin_used
+                free_margin  = max(0.0, capital - other_margin)
+                if free_margin > 10:
+                    size = free_margin * _FREE_PCT * xrp_leverage / x_O
+                    if size > 0:
+                        xrp_entry     = x_O * (1 + SLIPPAGE * xrp_pending_dir)
+                        xrp_entry_fee = size * xrp_entry * xrp_fee
+                        capital      -= xrp_entry_fee
+                        xrp_pos       = xrp_pending_dir
+                        xrp_size      = size
+                        xrp_margin_used = xrp_size * xrp_entry / xrp_leverage
+                        if xrp_pos == 1:
+                            xrp_hp = x_H; xrp_lp = float('inf')
+                            xrp_tsl = xrp_entry - xrp_trail * x_atr
+                        else:
+                            xrp_lp = x_L; xrp_hp = 0.0
+                            xrp_tsl = xrp_entry + xrp_trail * x_atr
+                xrp_pending_dir = 0
 
             # ── XRP 出場 ─────────────────────────────────────
             if xrp_pos != 0:
                 closed_xrp = False; xp = 0.0
                 if xrp_pos == 1:
-                    xrp_hp = max(xrp_hp, x_H)
+                    xrp_hp  = max(xrp_hp, x_H)
                     xrp_tsl = max(xrp_tsl, xrp_hp - xrp_trail * x_atr)
                     if x_L <= xrp_tsl:
                         xp = max(xrp_tsl, x_O) * (1 - SLIPPAGE); closed_xrp = True
                 elif xrp_pos == -1:
-                    xrp_lp = min(xrp_lp, x_L)
+                    xrp_lp  = min(xrp_lp, x_L)
                     xrp_tsl = min(xrp_tsl, xrp_lp + xrp_trail * x_atr)
                     if x_H >= xrp_tsl:
                         xp = min(xrp_tsl, x_O) * (1 + SLIPPAGE); closed_xrp = True
@@ -559,7 +552,6 @@ def run_triple(config, label: str = "", scheme: str = 'tier'):
                     xrp_trades.append({'Time': ts, 'Strategy': 'XRP', 'PnL': net, 'Cap': capital})
                     xrp_pos = 0; xrp_size = 0.0; xrp_entry_fee = 0.0
                     xrp_margin_used = 0.0
-                    xrp_twap_active = False; xrp_twap_remaining = 0; xrp_twap_pending = False
                     if net < 0:
                         xrp_consec += 1
                         if xrp_consec >= xrp_max_loss:
@@ -568,34 +560,33 @@ def run_triple(config, label: str = "", scheme: str = 'tier'):
                         xrp_consec = 0
 
             # ── XRP 入場訊號：Fib 回撤 ──────────────────────
-            if xrp_pos == 0 and not xrp_twap_active and xi >= xrp_swing_n and x_atr > 0:
-                _win_xh     = xrp_highs[xi - xrp_swing_n:xi]
-                _win_xl     = xrp_lows[xi - xrp_swing_n:xi]
-                swing_high  = np.max(_win_xh)
-                swing_low   = np.min(_win_xl)
-                swing_range = swing_high - swing_low
-                _xhi_idx    = int(np.argmax(_win_xh))
-                _xlo_idx    = int(np.argmin(_win_xl))
+            if xrp_pos == 0 and xrp_pending_dir == 0 and xi >= xrp_swing_n and x_atr > 0:
+                _win_xh    = xrp_highs[xi - xrp_swing_n:xi]
+                _win_xl    = xrp_lows[xi - xrp_swing_n:xi]
+                swing_high = np.max(_win_xh)
+                swing_low  = np.min(_win_xl)
+                swing_rng  = swing_high - swing_low
+                _xhi_idx   = int(np.argmax(_win_xh))
+                _xlo_idx   = int(np.argmin(_win_xl))
 
                 direction = 0
-                if swing_range > 0:
+                if swing_rng > 0:
                     prev_C = xrp_closes[xi - 1]
                     prev_L = xrp_lows[xi - 1]
                     prev_H = xrp_highs[xi - 1]
 
                     if x_C > x_ema and _xhi_idx > _xlo_idx:
-                        fib_price = swing_high - xrp_fib_level * swing_range
+                        fib_price = swing_high - xrp_fib_level * swing_rng
                         tol = fib_price * xrp_fib_tol
                         if prev_L <= fib_price + tol and prev_C > fib_price:
                             direction = 1
                     elif x_C < x_ema and _xlo_idx > _xhi_idx:
-                        fib_price = swing_low + xrp_fib_level * swing_range
+                        fib_price = swing_low + xrp_fib_level * swing_rng
                         tol = fib_price * xrp_fib_tol
                         if prev_H >= fib_price - tol and prev_C < fib_price:
                             direction = -1
 
                 has_sig = direction != 0
-
                 if xrp_skip:
                     if has_sig:
                         xrp_skip = False; xrp_in_skip = True
@@ -603,55 +594,126 @@ def run_triple(config, label: str = "", scheme: str = 'tier'):
                     if not has_sig:
                         xrp_in_skip = False
                 elif has_sig:
-                    risk_per_unit = xrp_sl_mult * x_atr
-                    if risk_per_unit > 0:
-                        other_margin = sol_margin_used + ada_margin_used
-                        free_margin  = max(0.0, capital - other_margin)
+                    xrp_pending_dir = direction
 
-                        if scheme == 'tier':
-                            _open_count  = (sol_pos != 0) + (ada_pos != 0)
-                            alloc_margin = capital * _MARGIN_TIERS[_open_count]
-                        else:  # free_a / free_b
-                            alloc_margin = free_margin * _FREE_PCT
+        # ══════════════════════════════════════════════════════
+        #  DOGE 1h 事件（Squeeze 爆發，市價 TWAP）
+        # ══════════════════════════════════════════════════════
+        if is_doge:
+            di    = doge_i_map[ts]
+            d_row = doge_dict[ts]
+            d_O   = float(d_row.open);  d_H = float(d_row.high)
+            d_L   = float(d_row.low);   d_C = float(d_row.close)
+            d_atr      = doge_atr_arr[di]
+            d_atr_prev = doge_atr_arr[di - 1] if di > 0 else d_atr
 
-                        if free_margin > 10:
-                            N = max(1, int(free_margin / xrp_max_cap))
-                            if N == 1:
-                                alloc_sz = alloc_margin * leverage / x_C
-                                if scheme == 'free_b':
-                                    size_each = alloc_sz
-                                else:  # tier / free_a
-                                    raw_sz = (free_margin * xrp_risk) / risk_per_unit
-                                    max_sz = free_margin * leverage / x_C
-                                    size_each = min(raw_sz, max_sz, alloc_sz)
-                            else:
-                                size_each = xrp_max_cap / x_C
+            # ── DOGE TWAP 第一份子單 ─────────────────────────
+            if doge_pos == 0 and doge_twap_active and doge_twap_pending:
+                sub_ep  = d_O * (1 + SLIPPAGE * doge_twap_direction)
+                sub_fee = doge_twap_size_each * sub_ep * doge_fee
+                capital -= sub_fee
+                doge_entry_fee   = sub_fee
+                doge_pos         = doge_twap_direction
+                doge_size        = doge_twap_size_each
+                doge_entry       = sub_ep
+                doge_margin_used = doge_size * doge_entry / doge_leverage
+                if doge_pos == 1:
+                    doge_hp = d_H; doge_lp = float('inf')
+                    doge_tsl = doge_entry - doge_trail * d_atr_prev
+                else:
+                    doge_lp = d_L; doge_hp = 0.0
+                    doge_tsl = doge_entry + doge_trail * d_atr_prev
+                doge_twap_remaining -= 1
+                doge_twap_pending    = False
 
-                            xrp_twap_size_each = size_each
-                            xrp_twap_direction = direction
-                            xrp_twap_active    = True
-                            xrp_twap_remaining = N
-                            xrp_twap_pending   = True
+            # ── DOGE TWAP 後續子單 ───────────────────────────
+            elif doge_pos != 0 and doge_twap_active and doge_twap_remaining > 0 and doge_pos == doge_twap_direction:
+                sub_ep  = d_O * (1 + SLIPPAGE * doge_pos)
+                sub_fee = doge_twap_size_each * sub_ep * doge_fee
+                capital -= sub_fee
+                doge_entry_fee += sub_fee
+                total_sz   = doge_size + doge_twap_size_each
+                doge_entry = (doge_entry * doge_size + sub_ep * doge_twap_size_each) / total_sz
+                doge_size  = total_sz
+                doge_margin_used    = doge_size * doge_entry / doge_leverage
+                doge_twap_remaining -= 1
+
+            if doge_twap_active and doge_twap_remaining == 0 and not doge_twap_pending:
+                doge_twap_active = False
+
+            # ── DOGE 出場 ────────────────────────────────────
+            if doge_pos != 0:
+                closed_doge = False; xp = 0.0
+                if doge_pos == 1:
+                    doge_hp  = max(doge_hp, d_H)
+                    doge_tsl = max(doge_tsl, doge_hp - doge_trail * d_atr)
+                    if d_L <= doge_tsl:
+                        xp = max(doge_tsl, d_O) * (1 - SLIPPAGE); closed_doge = True
+                elif doge_pos == -1:
+                    doge_lp  = min(doge_lp, d_L)
+                    doge_tsl = min(doge_tsl, doge_lp + doge_trail * d_atr)
+                    if d_H >= doge_tsl:
+                        xp = min(doge_tsl, d_O) * (1 + SLIPPAGE); closed_doge = True
+
+                if closed_doge:
+                    gross = (xp - doge_entry) * doge_size * doge_pos
+                    x_fee = xp * doge_size * doge_fee
+                    net   = gross - doge_entry_fee - x_fee
+                    capital += gross - x_fee
+                    doge_trades.append({'Time': ts, 'Strategy': 'DOGE', 'PnL': net, 'Cap': capital})
+                    doge_pos = 0; doge_size = 0.0; doge_entry_fee = 0.0
+                    doge_margin_used  = 0.0
+                    doge_twap_active  = False; doge_twap_remaining = 0; doge_twap_pending = False
+                    if net < 0:
+                        doge_consec += 1
+                        if doge_consec >= doge_max_loss:
+                            doge_skip = True; doge_in_skip = False; doge_consec = 0
+                    else:
+                        doge_consec = 0
+
+            # ── DOGE 入場訊號：Squeeze Fire ──────────────────
+            if doge_pos == 0 and not doge_twap_active and di > 0:
+                is_fire = (doge_sq_arr[di - 1] == 1 and doge_sq_arr[di] == 0
+                           and not np.isnan(d_atr) and d_atr > 0)
+                direction = (1 if doge_mom_arr[di] > 0 else -1) if is_fire else 0
+
+                if doge_skip:
+                    if is_fire:
+                        doge_skip = False; doge_in_skip = True
+                elif doge_in_skip:
+                    if not is_fire:
+                        doge_in_skip = False
+                elif is_fire:
+                    other_margin = sol_margin_used + ada_margin_used + xrp_margin_used
+                    free_margin  = max(0.0, capital - other_margin)
+                    if free_margin > 10:
+                        N            = max(1, int(free_margin / doge_max_cap))
+                        alloc_margin = free_margin * _FREE_PCT
+                        size_each    = alloc_margin * doge_leverage / d_C if N == 1 else doge_max_cap / d_C
+
+                        doge_twap_size_each = size_each
+                        doge_twap_direction = direction
+                        doge_twap_active    = True
+                        doge_twap_remaining = N
+                        doge_twap_pending   = True
 
         # ── 同時持倉統計 ─────────────────────────────────────
-        active = (sol_pos != 0) + (ada_pos != 0) + (xrp_pos != 0)
-        if active == 2:
-            simul_2 += 1
-        elif active == 3:
-            simul_3 += 1
+        active = (sol_pos != 0) + (ada_pos != 0) + (xrp_pos != 0) + (doge_pos != 0)
+        if   active == 2: simul_2 += 1
+        elif active == 3: simul_3 += 1
+        elif active == 4: simul_4 += 1
 
         # ── 淨值快照 ─────────────────────────────────────────
-        if is_sol or is_ada or is_xrp:
+        if is_sol or is_ada or is_xrp or is_doge:
             unr = 0.0
-            if sol_pos != 0 and is_sol:
-                sc = float(sol_dict[ts].close)
-                unr += (sc - sol_entry) * sol_size * sol_pos
-            if ada_pos != 0 and is_ada:
-                ac = float(ada_dict[ts].close)
-                unr += (ac - ada_entry) * ada_size * ada_pos
-            if xrp_pos != 0 and is_xrp:
-                xc = float(xrp_dict[ts].close)
-                unr += (xc - xrp_entry) * xrp_size * xrp_pos
+            if sol_pos  != 0 and is_sol:
+                unr += (float(sol_dict[ts].close)  - sol_entry)  * sol_size  * sol_pos
+            if ada_pos  != 0 and is_ada:
+                unr += (float(ada_dict[ts].close)  - ada_entry)  * ada_size  * ada_pos
+            if xrp_pos  != 0 and is_xrp:
+                unr += (float(xrp_dict[ts].close)  - xrp_entry)  * xrp_size  * xrp_pos
+            if doge_pos != 0 and is_doge:
+                unr += (float(doge_dict[ts].close) - doge_entry) * doge_size * doge_pos
             equity = capital + unr
             equity_curve.append({'timestamp': ts, 'equity': equity})
             if equity > peak:
@@ -662,30 +724,39 @@ def run_triple(config, label: str = "", scheme: str = 'tier'):
 
     # ── 強制平倉 ─────────────────────────────────────────────
     if sol_pos != 0:
-        sc = df_sol['close'].iloc[-1]
-        xp = sc * (1 - SLIPPAGE if sol_pos == 1 else 1 + SLIPPAGE)
+        sc  = df_sol['close'].iloc[-1]
+        xp  = sc * (1 - SLIPPAGE if sol_pos == 1 else 1 + SLIPPAGE)
         pnl = (xp - sol_entry) * sol_size * sol_pos - xp * sol_size * sol_fee
         net = pnl - sol_entry_fee
         capital += pnl
         sol_trades.append({'Time': df_sol.index[-1], 'Strategy': 'SOL', 'PnL': net, 'Cap': capital})
 
     if ada_pos != 0:
-        ac = df_ada['close'].iloc[-1]
-        xp = ac * (1 - SLIPPAGE if ada_pos == 1 else 1 + SLIPPAGE)
+        ac    = df_ada['close'].iloc[-1]
+        xp    = ac * (1 - SLIPPAGE if ada_pos == 1 else 1 + SLIPPAGE)
         gross = (xp - ada_entry) * ada_size * ada_pos
         x_fee = xp * ada_size * ada_fee
-        net = gross - ada_entry_fee - x_fee
+        net   = gross - ada_entry_fee - x_fee
         capital += gross - x_fee
         ada_trades.append({'Time': df_ada.index[-1], 'Strategy': 'ADA', 'PnL': net, 'Cap': capital})
 
     if xrp_pos != 0:
-        xc = df_xrp['close'].iloc[-1]
-        xp = xc * (1 - SLIPPAGE if xrp_pos == 1 else 1 + SLIPPAGE)
+        xc    = df_xrp['close'].iloc[-1]
+        xp    = xc * (1 - SLIPPAGE if xrp_pos == 1 else 1 + SLIPPAGE)
         gross = (xp - xrp_entry) * xrp_size * xrp_pos
         x_fee = xp * xrp_size * xrp_fee
-        net = gross - xrp_entry_fee - x_fee
+        net   = gross - xrp_entry_fee - x_fee
         capital += gross - x_fee
         xrp_trades.append({'Time': df_xrp.index[-1], 'Strategy': 'XRP', 'PnL': net, 'Cap': capital})
+
+    if doge_pos != 0:
+        dc    = df_doge['close'].iloc[-1]
+        xp    = dc * (1 - SLIPPAGE if doge_pos == 1 else 1 + SLIPPAGE)
+        gross = (xp - doge_entry) * doge_size * doge_pos
+        x_fee = xp * doge_size * doge_fee
+        net   = gross - doge_entry_fee - x_fee
+        capital += gross - x_fee
+        doge_trades.append({'Time': df_doge.index[-1], 'Strategy': 'DOGE', 'PnL': net, 'Cap': capital})
 
     # ── 統計 ─────────────────────────────────────────────────
     eq_df = pd.DataFrame(equity_curve)
@@ -703,46 +774,50 @@ def run_triple(config, label: str = "", scheme: str = 'tier'):
         avg_l  = sum(losses) / len(losses) if losses else 0.0
         return total, wr, pf, pnl, avg_w, avg_l
 
-    sol_n, sol_wr, sol_pf, sol_pnl, sol_avgw, sol_avgl = _stats(sol_trades)
-    ada_n, ada_wr, ada_pf, ada_pnl, ada_avgw, ada_avgl = _stats(ada_trades)
-    xrp_n, xrp_wr, xrp_pf, xrp_pnl, xrp_avgw, xrp_avgl = _stats(xrp_trades)
-    all_n, all_wr, all_pf, all_pnl, _, _ = _stats(sol_trades + ada_trades + xrp_trades)
+    sol_n,  sol_wr,  sol_pf,  sol_pnl,  sol_avgw,  sol_avgl  = _stats(sol_trades)
+    ada_n,  ada_wr,  ada_pf,  ada_pnl,  ada_avgw,  ada_avgl  = _stats(ada_trades)
+    xrp_n,  xrp_wr,  xrp_pf,  xrp_pnl,  xrp_avgw,  xrp_avgl  = _stats(xrp_trades)
+    doge_n, doge_wr, doge_pf, doge_pnl, doge_avgw, doge_avgl = _stats(doge_trades)
+    all_n,  all_wr,  all_pf,  all_pnl,  _,         _         = _stats(
+        sol_trades + ada_trades + xrp_trades + doge_trades)
 
     # Sharpe
-    sharpe = 0
+    sharpe = 0.0
     if len(eq_df) > 1:
-        eq_s = eq_df.set_index('timestamp')['equity']
-        daily = eq_s.resample('D').last().ffill()
+        eq_s      = eq_df.set_index('timestamp')['equity']
+        daily     = eq_s.resample('D').last().ffill()
         daily_ret = daily.pct_change().dropna()
         if daily_ret.std() > 0:
             sharpe = float(daily_ret.mean() / daily_ret.std() * np.sqrt(365))
 
     return {
-        'label': label,
-        'final': capital,
-        'ret%': (capital / initial_cap - 1) * 100,
-        'mdd%': max_dd * 100,
+        'label':  label,
+        'final':  capital,
+        'ret%':   (capital / initial_cap - 1) * 100,
+        'mdd%':   max_dd * 100,
         'sharpe': sharpe,
-        'sol_n': sol_n, 'sol_wr': sol_wr, 'sol_pf': sol_pf, 'sol_pnl': sol_pnl,
-        'sol_avgw': sol_avgw, 'sol_avgl': sol_avgl,
-        'ada_n': ada_n, 'ada_wr': ada_wr, 'ada_pf': ada_pf, 'ada_pnl': ada_pnl,
-        'ada_avgw': ada_avgw, 'ada_avgl': ada_avgl,
-        'xrp_n': xrp_n, 'xrp_wr': xrp_wr, 'xrp_pf': xrp_pf, 'xrp_pnl': xrp_pnl,
-        'xrp_avgw': xrp_avgw, 'xrp_avgl': xrp_avgl,
-        'all_n': all_n, 'all_wr': all_wr, 'all_pf': all_pf,
-        'simul_2': simul_2, 'simul_3': simul_3,
-        'equity_df': eq_df,
-        'sol_trades': sol_trades,
-        'ada_trades': ada_trades,
-        'xrp_trades': xrp_trades,
+        'sol_n':  sol_n,  'sol_wr':  sol_wr,  'sol_pf':  sol_pf,  'sol_pnl':  sol_pnl,
+        'sol_avgw':  sol_avgw,  'sol_avgl':  sol_avgl,
+        'ada_n':  ada_n,  'ada_wr':  ada_wr,  'ada_pf':  ada_pf,  'ada_pnl':  ada_pnl,
+        'ada_avgw':  ada_avgw,  'ada_avgl':  ada_avgl,
+        'xrp_n':  xrp_n,  'xrp_wr':  xrp_wr,  'xrp_pf':  xrp_pf,  'xrp_pnl':  xrp_pnl,
+        'xrp_avgw':  xrp_avgw,  'xrp_avgl':  xrp_avgl,
+        'doge_n': doge_n, 'doge_wr': doge_wr, 'doge_pf': doge_pf, 'doge_pnl': doge_pnl,
+        'doge_avgw': doge_avgw, 'doge_avgl': doge_avgl,
+        'all_n':  all_n,  'all_wr':  all_wr,  'all_pf':  all_pf,
+        'simul_2': simul_2, 'simul_3': simul_3, 'simul_4': simul_4,
+        'equity_df':   eq_df,
+        'sol_trades':  sol_trades,
+        'ada_trades':  ada_trades,
+        'xrp_trades':  xrp_trades,
+        'doge_trades': doge_trades,
     }
 
 
 def _yearly_table(trades, label):
-    """印出某策略的年度績效明細"""
     if not trades:
         return
-    df = pd.DataFrame(trades)
+    df   = pd.DataFrame(trades)
     df['Year'] = pd.to_datetime(df['Time']).dt.year
     rows = []
     for y, g in df.groupby('Year'):
@@ -771,18 +846,18 @@ def _yearly_table(trades, label):
 
 
 def print_result(r):
-    print(f"\n  {'='*70}")
+    print(f"\n  {'='*72}")
     print(f"  {r['label']}")
-    print(f"  {'='*70}")
+    print(f"  {'='*72}")
     print(f"  最終資金:   ${r['final']:,.2f}")
     print(f"  總報酬:     {r['ret%']:+,.1f}%")
     print(f"  最大回撤:   {r['mdd%']:+.1f}%")
     print(f"  Sharpe:     {r['sharpe']:.3f}")
     print(f"  總 PF:      {r['all_pf']:.2f}")
-    print(f"")
+    print()
     print(f"  {'策略':<6} {'交易數':>6} {'勝率%':>8} {'PF':>7} {'盈虧比':>7} {'損益':>16}")
-    print(f"  {'-'*56}")
-    for key, name in [('sol', 'SOL'), ('ada', 'ADA'), ('xrp', 'XRP')]:
+    print(f"  {'-'*58}")
+    for key, name in [('sol', 'SOL'), ('ada', 'ADA'), ('xrp', 'XRP'), ('doge', 'DOGE')]:
         n    = r[f'{key}_n']
         wr   = r[f'{key}_wr']
         pf   = r[f'{key}_pf']
@@ -792,143 +867,85 @@ def print_result(r):
         rr   = abs(avgw / avgl) if avgl != 0 else 0
         print(f"  {name:<6} {n:>6} {wr:>7.1f}% {pf:>7.2f} {rr:>7.2f} {pnl:>+15,.2f}")
     print(f"  {'合計':<6} {r['all_n']:>6} {r['all_wr']:>7.1f}% {r['all_pf']:>7.2f}")
-    print(f"")
+    print()
     print(f"  同時持倉 2 策略: {r['simul_2']:,} 根 K 棒")
     print(f"  同時持倉 3 策略: {r['simul_3']:,} 根 K 棒")
+    print(f"  同時持倉 4 策略: {r['simul_4']:,} 根 K 棒")
 
-    # ── 各策略年度明細 ────────────────────────────────────────────
-    _yearly_table(r['sol_trades'], 'SOL 趨勢')
-    _yearly_table(r['ada_trades'], 'ADA 唐奇安')
-    _yearly_table(r['xrp_trades'], 'XRP 斐波')
+    _yearly_table(r['sol_trades'],  'SOL 趨勢')
+    _yearly_table(r['ada_trades'],  'ADA 唐奇安')
+    _yearly_table(r['xrp_trades'],  'XRP 斐波')
+    _yearly_table(r['doge_trades'], 'DOGE Squeeze')
 
 
 def _build_single_equity(trades: list, initial_cap: float,
                          time_index: pd.DatetimeIndex) -> pd.Series:
-    """
-    用單一策略的 trades 重建「假設獨立運行」的淨值曲線。
-    以每筆交易的 PnL/Cap（相對報酬率）複利套用到獨立的 initial_cap，
-    避免大倉位虧損金額遠超獨立初始資金而造成負數假象。
-    """
     if not trades:
         return pd.Series(initial_cap, index=time_index)
-
-    times = pd.to_datetime([t['Time'] for t in trades])
-    # 每筆報酬率 = PnL / 當時聯合資金池
+    times   = pd.to_datetime([t['Time'] for t in trades])
     returns = pd.Series(
         [t['PnL'] / t['Cap'] if t.get('Cap', 0) > 0 else 0.0 for t in trades],
         index=times
     )
-    # 同一時間點有多筆交易時加總報酬率
-    returns = returns.groupby(level=0).sum()
-    # 複利累積，從 initial_cap 出發
+    returns    = returns.groupby(level=0).sum()
     cum_equity = initial_cap * (1 + returns).cumprod()
-
-    full = cum_equity.reindex(time_index).ffill().fillna(initial_cap)
-    return full
-
-
-_SCHEME_LABELS = {
-    'tier':   '先到先得 40/20/10',
-    'free_a': '可用×40% + 風險限',
-    'free_b': '可用×40% 直接用',
-}
-_SCHEME_COLORS = {
-    'tier':   '#2f8ccb',
-    'free_a': '#e67e22',
-    'free_b': '#2ecc71',
-}
+    return cum_equity.reindex(time_index).ffill().fillna(initial_cap)
 
 
 def main():
-    parser = argparse.ArgumentParser(description='三策略聯合回測')
-    parser.add_argument(
-        '--scheme', default='free_b',
-        choices=['tier', 'free_a', 'free_b', 'all'],
-        help='保證金方案 (預設: free_b = 實盤方案；all = 三種全跑並比較)'
-    )
-    args = parser.parse_args()
+    parser = argparse.ArgumentParser(description='四策略聯合回測')
+    args = parser.parse_args()  # noqa: F841
 
-    config = load_config()
-    bt = config.get('backtest', {})
-    leverage = config['risk'].get('leverage', 2)
+    config      = load_config()
+    bt          = config.get('backtest', {})
     initial_cap = config['risk']['initial_capital']
 
-    print(f"三策略聯合回測 — SOL 趨勢 + ADA 唐奇安 + XRP 斐波")
+    print(f"四策略聯合回測 — SOL 趨勢 + ADA 唐奇安 + XRP 斐波 + DOGE Squeeze")
+    print(f"  資金方案: 可用保證金 × {_FREE_PCT*100:.0f}%（free_b）")
     print(f"  期間: {bt.get('start_date','?')} ~ {bt.get('end_date','?')}")
-    print(f"  槓桿: {leverage}x | 初始資金: ${initial_cap}")
-    print(f"  SOL: {config['trading'].get('timeframe','15m')} | ADA: 1h | XRP: 1h")
+    print(f"  初始資金: ${initial_cap}")
 
-    schemes = ['tier', 'free_a', 'free_b'] if args.scheme == 'all' else [args.scheme]
-
-    results = {}
-    for s in schemes:
-        label = _SCHEME_LABELS[s]
-        print(f"\n  ── 跑方案: {label} ──")
-        r = run_triple(config, label=label, scheme=s)
-        results[s] = r
-        if args.scheme != 'all':
-            print_result(r)
-
-    # ── 比較摘要（all 模式）──────────────────────────────────────
-    if args.scheme == 'all':
-        W = 80
-        print(f"\n{'='*W}")
-        print(f"  三種方案比較")
-        print(f"{'='*W}")
-        print(f"  {'方案':<20} {'最終資金':>14} {'報酬%':>10} {'MDD%':>8} {'Sharpe':>8} {'PF':>6} {'交易':>6}")
-        print(f"  {'-'*W}")
-        for s, r in results.items():
-            print(f"  {_SCHEME_LABELS[s]:<20} ${r['final']:>13,.0f} "
-                  f"{r['ret%']:>+9.1f}% {r['mdd%']:>+7.1f}% "
-                  f"{r['sharpe']:>8.3f} {r['all_pf']:>6.2f} {r['all_n']:>6}")
-        print(f"{'='*W}")
+    label = f"可用×{_FREE_PCT*100:.0f}% 直接用"
+    r     = run_triple(config, label=label)
+    print_result(r)
 
     # ── 淨值曲線 ─────────────────────────────────────────────
-    r0 = results[schemes[0]]
-    eq0 = r0['equity_df']
-    time_index = pd.DatetimeIndex(eq0['timestamp'])
+    eq         = r['equity_df']
+    time_index = pd.DatetimeIndex(eq['timestamp'])
+    _floor     = 1.0
+
+    sol_eq  = _build_single_equity(r['sol_trades'],  initial_cap, time_index)
+    ada_eq  = _build_single_equity(r['ada_trades'],  initial_cap, time_index)
+    xrp_eq  = _build_single_equity(r['xrp_trades'],  initial_cap, time_index)
+    doge_eq = _build_single_equity(r['doge_trades'], initial_cap, time_index)
 
     fig, ax = plt.subplots(figsize=(16, 7))
-    _floor = 1.0
-
-    if args.scheme != 'all':
-        # 單方案：畫獨立子策略 + 聯合
-        r = results[schemes[0]]
-        eq = r['equity_df']
-        sol_eq = _build_single_equity(r['sol_trades'], initial_cap, time_index)
-        ada_eq = _build_single_equity(r['ada_trades'], initial_cap, time_index)
-        xrp_eq = _build_single_equity(r['xrp_trades'], initial_cap, time_index)
-        ax.plot(sol_eq.index, sol_eq.clip(lower=_floor), color="#D58035", linewidth=1.0,
-                alpha=0.75, label=f"SOL (獨立) +{r['sol_pnl']:,.0f}")
-        ax.plot(ada_eq.index, ada_eq.clip(lower=_floor), color="#44C744", linewidth=1.0,
-                alpha=0.75, label=f"ADA (獨立) +{r['ada_pnl']:,.0f}")
-        ax.plot(xrp_eq.index, xrp_eq.clip(lower=_floor), color="#E069E0", linewidth=1.0,
-                alpha=0.75, label=f"XRP (獨立) +{r['xrp_pnl']:,.0f}")
-        ax.plot(pd.DatetimeIndex(eq['timestamp']), eq['equity'].clip(lower=_floor),
-                color=_SCHEME_COLORS[schemes[0]], linewidth=1.2,
-                label=f"聯合 {r['label']}  +{r['ret%']:.0f}%")
-        title = f"三策略聯合 {r['label']} | MDD {r['mdd%']:+.1f}% | Sharpe {r['sharpe']:.3f}"
-    else:
-        # 多方案：只畫三條聯合曲線做比較
-        for s, r in results.items():
-            eq = r['equity_df']
-            ax.plot(pd.DatetimeIndex(eq['timestamp']), eq['equity'].clip(lower=_floor),
-                    color=_SCHEME_COLORS[s], linewidth=1.2,
-                    label=f"{r['label']}  MDD{r['mdd%']:+.1f}%  +{r['ret%']:.0f}%")
-        title = "三策略聯合 — 保證金方案比較"
+    ax.plot(sol_eq.index,  sol_eq.clip(lower=_floor),  color="#D58035", linewidth=1.0,
+            alpha=0.7, label=f"SOL  (獨立) +{r['sol_pnl']:,.0f}")
+    ax.plot(ada_eq.index,  ada_eq.clip(lower=_floor),  color="#44C744", linewidth=1.0,
+            alpha=0.7, label=f"ADA  (獨立) +{r['ada_pnl']:,.0f}")
+    ax.plot(xrp_eq.index,  xrp_eq.clip(lower=_floor),  color="#E069E0", linewidth=1.0,
+            alpha=0.7, label=f"XRP  (獨立) +{r['xrp_pnl']:,.0f}")
+    ax.plot(doge_eq.index, doge_eq.clip(lower=_floor), color="#5DADE2", linewidth=1.0,
+            alpha=0.7, label=f"DOGE (獨立) +{r['doge_pnl']:,.0f}")
+    ax.plot(pd.DatetimeIndex(eq['timestamp']), eq['equity'].clip(lower=_floor),
+            color="#2ecc71", linewidth=1.5,
+            label=f"四策略聯合  +{r['ret%']:.0f}%")
 
     ax.axhline(initial_cap, color='gray', linestyle='--', alpha=0.4, linewidth=0.8)
-    ax.set_title(title, fontsize=14)
+    ax.set_title(
+        f"四策略聯合 {label} | MDD {r['mdd%']:+.1f}% | Sharpe {r['sharpe']:.3f}",
+        fontsize=14
+    )
     ax.set_ylabel('資金 (USDT)')
     ax.set_xlabel('日期')
     ax.set_yscale('log')
-    ax.legend(loc='upper left', fontsize=10)
+    ax.legend(loc='upper left', fontsize=9)
     ax.grid(True, alpha=0.3)
     plt.tight_layout()
-    fname = 'triple_scheme_compare.png' if args.scheme == 'all' else 'triple_backtest.png'
-    plt.savefig(fname, dpi=150)
+    plt.savefig('triple_backtest.png', dpi=150)
     plt.show()
-    print(f"\n  圖表已儲存: {fname}")
+    print(f"\n  圖表已儲存: triple_backtest.png")
 
 
 if __name__ == '__main__':
