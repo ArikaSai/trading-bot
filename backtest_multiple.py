@@ -1,13 +1,13 @@
 """
-backtest_triple.py
-══════════════════
+backtest_multiple.py
+════════════════════
 SOL 趨勢 + ADA 唐奇安 + XRP 斐波 + DOGE Squeeze  四策略共用資金聯合回測
 
 資金方案：free_b（可用保證金 × 40%，直接用）
 時間軸  ：SOL 15m + ADA / XRP / DOGE 1h 合併排序
 
 用法:
-    python backtest_triple.py
+    python backtest_multiple.py
 """
 
 import argparse
@@ -94,8 +94,9 @@ def run_triple(config, label: str = ""):
     xrp_fib_tol   = xrp_cfg.get('fib_tol', 0.005)
     xrp_leverage  = xrp_cfg.get('leverage', 1)
     xrp_max_cap   = xrp_cfg.get('max_trade_cap', 200000.0)
-    xrp_max_loss  = xrp_cfg.get('max_consec_losses', 3)
-    xrp_fee       = fee_rate
+    xrp_max_loss        = xrp_cfg.get('max_consec_losses', 3)
+    xrp_limit_max_bars  = xrp_cfg.get('xrp_limit_max_hours', 0)  # 0 = 無逾時
+    xrp_fee             = fee_rate
 
     # DOGE Squeeze 參數
     doge_cfg        = config.get('doge_squeeze', {})
@@ -158,7 +159,6 @@ def run_triple(config, label: str = ""):
     # XRP Fib 預計算
     xrp_highs  = df_xrp['high'].values
     xrp_lows   = df_xrp['low'].values
-    xrp_closes = df_xrp['close'].values
     xrp_idx    = df_xrp.index
     xrp_i_map  = {ts: i for i, ts in enumerate(xrp_idx)}
 
@@ -176,7 +176,7 @@ def run_triple(config, label: str = ""):
     sol_pos = 0; sol_size = 0.0; sol_entry = 0.0
     sol_sl = 0.0; sol_tsl = 0.0; sol_liq = 0.0
     sol_high = 0.0; sol_low = float('inf')
-    sol_init_risk = 0.0; sol_entry_fee = 0.0
+    sol_entry_fee = 0.0
     sol_long_sig = False; sol_short_sig = False
     sol_consec = 0; sol_skip = False; sol_in_skip = False
     sol_be_activated = False
@@ -204,7 +204,9 @@ def run_triple(config, label: str = ""):
     xrp_tsl = 0.0; xrp_hp = 0.0; xrp_lp = float('inf')
     xrp_entry_fee = 0.0; xrp_margin_used = 0.0
     xrp_consec = 0; xrp_skip = False; xrp_in_skip = False
-    xrp_pending_dir = 0
+    xrp_pending_dir   = 0
+    xrp_pending_price = 0.0   # 掛單 Fib 水平
+    xrp_pending_bars  = 0     # 掛單後已過的 bar 數
     xrp_trades = []
 
     # ── DOGE 狀態 ─────────────────────────────────────────────
@@ -254,11 +256,9 @@ def run_triple(config, label: str = ""):
                 sol_saved_sl_dist = 0.0
 
                 if sol_twap_active and sol_twap_remaining > 0:
-                    sol_size      = sol_twap_size_each
-                    sol_init_risk = sol_twap_remaining * sol_twap_size_each * sl_dist
+                    sol_size = sol_twap_size_each
                 else:
-                    sol_size      = alloc_margin * sol_leverage / cur_open
-                    sol_init_risk = sol_size * sl_dist
+                    sol_size = alloc_margin * sol_leverage / cur_open
 
                 sol_size = min(sol_size, max(0.0, free_margin * sol_leverage / cur_open))
 
@@ -335,7 +335,7 @@ def run_triple(config, label: str = ""):
                     sol_be_activated = True
 
             # ── 出場判斷 ─────────────────────────────────────
-            closed, exit_p, pnl, reason = CoreStrategy.check_exit(
+            closed, _, pnl, reason = CoreStrategy.check_exit(
                 sol_pos, cur_low, cur_high, cur_open,
                 sol_liq, sol_tsl, sol_sl,
                 sol_entry, sol_size, sol_fee, SLIPPAGE
@@ -503,7 +503,7 @@ def run_triple(config, label: str = ""):
                         ada_twap_pending   = True
 
         # ══════════════════════════════════════════════════════
-        #  XRP 1h 事件（限價進場，無 TWAP）
+        #  XRP 1h 事件（限價進場：等待 Fib 觸價 + 逾時取消）
         # ══════════════════════════════════════════════════════
         if is_xrp:
             xi    = xrp_i_map[ts]
@@ -513,26 +513,43 @@ def run_triple(config, label: str = ""):
             x_atr = float(x_row.ATR)
             x_ema = float(x_row.EMA)
 
-            # ── XRP 進場執行（上根斐波訊號，本根開盤執行）────
+            # ── 限價單成交確認 & 逾時取消 ────────────────────
             if xrp_pos == 0 and xrp_pending_dir != 0:
-                other_margin = sol_margin_used + ada_margin_used + doge_margin_used
-                free_margin  = max(0.0, capital - other_margin)
-                if free_margin > 10:
-                    size = free_margin * _FREE_PCT * xrp_leverage / x_O
-                    if size > 0:
-                        xrp_entry     = x_O * (1 + SLIPPAGE * xrp_pending_dir)
-                        xrp_entry_fee = size * xrp_entry * xrp_fee
-                        capital      -= xrp_entry_fee
-                        xrp_pos       = xrp_pending_dir
-                        xrp_size      = size
-                        xrp_margin_used = xrp_size * xrp_entry / xrp_leverage
-                        if xrp_pos == 1:
-                            xrp_hp = x_H; xrp_lp = float('inf')
-                            xrp_tsl = xrp_entry - xrp_trail * x_atr
-                        else:
-                            xrp_lp = x_L; xrp_hp = 0.0
-                            xrp_tsl = xrp_entry + xrp_trail * x_atr
-                xrp_pending_dir = 0
+                xrp_pending_bars += 1
+                tol = xrp_pending_price * xrp_fib_tol
+                filled = False
+                # 做多：本根 Low 觸及 Fib 且收盤在 Fib 上方（反彈確認）
+                if xrp_pending_dir == 1 and x_L <= xrp_pending_price + tol and x_C > xrp_pending_price:
+                    fill_p = min(x_O, xrp_pending_price) * (1 + SLIPPAGE)
+                    filled = True
+                # 做空：本根 High 觸及 Fib 且收盤在 Fib 下方（反彈確認）
+                elif xrp_pending_dir == -1 and x_H >= xrp_pending_price - tol and x_C < xrp_pending_price:
+                    fill_p = max(x_O, xrp_pending_price) * (1 - SLIPPAGE)
+                    filled = True
+
+                if filled:
+                    other_margin = sol_margin_used + ada_margin_used + doge_margin_used
+                    free_margin  = max(0.0, capital - other_margin)
+                    if free_margin > 10:
+                        size = free_margin * _FREE_PCT * xrp_leverage / fill_p
+                        if size > 0:
+                            xrp_entry     = fill_p
+                            xrp_entry_fee = size * xrp_entry * xrp_fee
+                            capital      -= xrp_entry_fee
+                            xrp_pos       = xrp_pending_dir
+                            xrp_size      = size
+                            xrp_margin_used = xrp_size * xrp_entry / xrp_leverage
+                            if xrp_pos == 1:
+                                xrp_hp = x_H; xrp_lp = float('inf')
+                                xrp_tsl = xrp_entry - xrp_trail * x_atr
+                            else:
+                                xrp_lp = x_L; xrp_hp = 0.0
+                                xrp_tsl = xrp_entry + xrp_trail * x_atr
+                    xrp_pending_dir = 0; xrp_pending_price = 0.0; xrp_pending_bars = 0
+
+                elif xrp_limit_max_bars > 0 and xrp_pending_bars >= xrp_limit_max_bars:
+                    # 逾時取消掛單
+                    xrp_pending_dir = 0; xrp_pending_price = 0.0; xrp_pending_bars = 0
 
             # ── XRP 出場 ─────────────────────────────────────
             if xrp_pos != 0:
@@ -563,7 +580,8 @@ def run_triple(config, label: str = ""):
                     else:
                         xrp_consec = 0
 
-            # ── XRP 入場訊號：Fib 回撤 ──────────────────────
+            # ── XRP 入場訊號：計算 Fib → 掛出限價單 ────────
+            # 條件：趨勢 + Swing 方向一致 + 當前價格在 Fib 外側（尚未觸及）
             if xrp_pos == 0 and xrp_pending_dir == 0 and xi >= xrp_swing_n and x_atr > 0:
                 _win_xh    = xrp_highs[xi - xrp_swing_n:xi]
                 _win_xl    = xrp_lows[xi - xrp_swing_n:xi]
@@ -573,22 +591,16 @@ def run_triple(config, label: str = ""):
                 _xhi_idx   = int(np.argmax(_win_xh))
                 _xlo_idx   = int(np.argmin(_win_xl))
 
-                direction = 0
+                direction = 0; fib_price = 0.0
                 if swing_rng > 0:
-                    prev_C = xrp_closes[xi - 1]
-                    prev_L = xrp_lows[xi - 1]
-                    prev_H = xrp_highs[xi - 1]
-
                     if x_C > x_ema and _xhi_idx > _xlo_idx:
-                        fib_price = swing_high - xrp_fib_level * swing_rng
-                        tol = fib_price * xrp_fib_tol
-                        if prev_L <= fib_price + tol and prev_C > fib_price:
-                            direction = 1
+                        fp = swing_high - xrp_fib_level * swing_rng
+                        if x_C > fp:          # 當前價在 Fib 上方，等待回撤
+                            direction = 1; fib_price = fp
                     elif x_C < x_ema and _xlo_idx > _xhi_idx:
-                        fib_price = swing_low + xrp_fib_level * swing_rng
-                        tol = fib_price * xrp_fib_tol
-                        if prev_H >= fib_price - tol and prev_C < fib_price:
-                            direction = -1
+                        fp = swing_low + xrp_fib_level * swing_rng
+                        if x_C < fp:          # 當前價在 Fib 下方，等待反彈
+                            direction = -1; fib_price = fp
 
                 has_sig = direction != 0
                 if xrp_skip:
@@ -598,7 +610,9 @@ def run_triple(config, label: str = ""):
                     if not has_sig:
                         xrp_in_skip = False
                 elif has_sig:
-                    xrp_pending_dir = direction
+                    xrp_pending_dir   = direction
+                    xrp_pending_price = fib_price
+                    xrp_pending_bars  = 0
 
         # ══════════════════════════════════════════════════════
         #  DOGE 1h 事件（Squeeze 爆發，市價 TWAP）
@@ -782,7 +796,7 @@ def run_triple(config, label: str = ""):
     ada_n,  ada_wr,  ada_pf,  ada_pnl,  ada_avgw,  ada_avgl  = _stats(ada_trades)
     xrp_n,  xrp_wr,  xrp_pf,  xrp_pnl,  xrp_avgw,  xrp_avgl  = _stats(xrp_trades)
     doge_n, doge_wr, doge_pf, doge_pnl, doge_avgw, doge_avgl = _stats(doge_trades)
-    all_n,  all_wr,  all_pf,  all_pnl,  _,         _         = _stats(
+    all_n,  all_wr,  all_pf,  _,         _,         _         = _stats(
         sol_trades + ada_trades + xrp_trades + doge_trades)
 
     # Sharpe
@@ -898,18 +912,28 @@ def _build_single_equity(trades: list, initial_cap: float,
 
 def main():
     parser = argparse.ArgumentParser(description='四策略聯合回測')
-    args = parser.parse_args()  # noqa: F841
+    parser.add_argument('--xrp_timeout', type=int, default=None,
+                        help='XRP 限價單最大逾時小時數（0=不逾時，覆蓋 config 設定）')
+    args = parser.parse_args()
 
     config      = load_config()
     bt          = config.get('backtest', {})
     initial_cap = config['risk']['initial_capital']
 
+    # CLI 覆蓋 config 設定
+    if args.xrp_timeout is not None:
+        config.setdefault('xrp_fib', {})['xrp_limit_max_hours'] = args.xrp_timeout
+
+    xrp_timeout = config.get('xrp_fib', {}).get('xrp_limit_max_hours', 0)
+    timeout_str = f"{xrp_timeout}h" if xrp_timeout > 0 else "不逾時"
+
     print(f"四策略聯合回測 — SOL 趨勢 + ADA 唐奇安 + XRP 斐波 + DOGE Squeeze")
     print(f"  資金方案: 可用保證金 × {_FREE_PCT*100:.0f}%（free_b）")
     print(f"  期間: {bt.get('start_date','?')} ~ {bt.get('end_date','?')}")
     print(f"  初始資金: ${initial_cap}")
+    print(f"  XRP 限價逾時: {timeout_str}")
 
-    label = f"可用×{_FREE_PCT*100:.0f}% 直接用"
+    label = f"可用×{_FREE_PCT*100:.0f}% XRP逾時={timeout_str}"
     r     = run_triple(config, label=label)
     print_result(r)
 
@@ -923,7 +947,7 @@ def main():
     xrp_eq  = _build_single_equity(r['xrp_trades'],  initial_cap, time_index)
     doge_eq = _build_single_equity(r['doge_trades'], initial_cap, time_index)
 
-    fig, ax = plt.subplots(figsize=(16, 7))
+    _, ax = plt.subplots(figsize=(16, 7))
     ax.plot(sol_eq.index,  sol_eq.clip(lower=_floor),  color="#D58035", linewidth=1.0,
             alpha=0.7, label=f"SOL  (獨立) +{r['sol_pnl']:,.0f}")
     ax.plot(ada_eq.index,  ada_eq.clip(lower=_floor),  color="#44C744", linewidth=1.0,

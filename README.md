@@ -27,7 +27,7 @@
 ### 回測
 | 檔案 | 說明 |
 |------|------|
-| `backtest_triple.py` | 四策略聯合回測主引擎：SOL + ADA + XRP + DOGE 共享資金池（可用保證金 × 40%），產生各策略獨立曲線與聯合曲線 |
+| `backtest_multiple.py` | 四策略聯合回測主引擎：SOL + ADA + XRP + DOGE 共享資金池（可用保證金 × 40%），產生各策略獨立曲線與聯合曲線 |
 | `backtest_squeeze.py` | BB Squeeze 波動率壓縮爆發策略回測：布林帶縮進 Keltner Channel 時壓縮、釋放時進場，ATR Trailing Stop 出場 |
 | `rolling_mdd.py` | 四策略滾動回測：按月滾動窗口評估最差區間 MDD，輸出排序統計與圖表 |
 | `squeeze_sweep.py` | BB Squeeze 參數掃描：掃描 kc_period / kc_mult / trail_atr / bb_std 共 300 組合，含高原分析與跨幣種測試 |
@@ -53,7 +53,7 @@ python download_data.py          # 下載所有幣種
 python fetch_coin.py SOL ADA XRP # 快速下載指定幣種
 
 # 4. 回測
-python backtest_triple.py        # 四策略聯合回測
+python backtest_multiple.py        # 四策略聯合回測
 python backtest_squeeze.py --symbol DOGE  # BB Squeeze 單策略回測
 python rolling_mdd.py            # 滾動 MDD 分析
 

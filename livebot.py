@@ -72,19 +72,36 @@ class LiveTradingBot:
         self.XRP_ATR_SL_MULT   = xrp_cfg.get('atr_sl_mult', 2.0)
         self.XRP_RISK_PCT      = xrp_cfg.get('risk_pct', 0.15)
         self.XRP_LEVERAGE      = xrp_cfg.get('leverage', 1)
-        self.XRP_MAX_TRADE_CAP = xrp_cfg.get('max_trade_cap', 200_000.0)
-        self.XRP_MAX_CONSEC    = xrp_cfg.get('max_consec_losses', 3)
-        self.XRP_FEE           = self.taker_fee_rate
+        self.XRP_MAX_TRADE_CAP  = xrp_cfg.get('max_trade_cap', 200_000.0)
+        self.XRP_MAX_CONSEC     = xrp_cfg.get('max_consec_losses', 3)
+        self.XRP_LIMIT_MAX_HOURS = xrp_cfg.get('xrp_limit_max_hours', 0)  # 0 = 不逾時
+        self.XRP_FEE            = self.taker_fee_rate
+
+        # ── DOGE BB Squeeze 參數（從 config 讀取）────────────────────
+        doge_cfg = self.config.get('doge_squeeze', {})
+        self.DOGE_BB_PERIOD     = doge_cfg.get('bb_period', 20)
+        self.DOGE_BB_STD        = doge_cfg.get('bb_std', 2.0)
+        self.DOGE_KC_PERIOD     = doge_cfg.get('kc_period', 10)
+        self.DOGE_KC_MULT       = doge_cfg.get('kc_mult', 1.25)
+        self.DOGE_MOM_PERIOD    = doge_cfg.get('mom_period', 12)
+        self.DOGE_TRAIL_ATR     = doge_cfg.get('trail_atr', 3.5)
+        self.DOGE_ATR_SL_MULT   = doge_cfg.get('atr_sl_mult', 2.0)
+        self.DOGE_LEVERAGE      = doge_cfg.get('leverage', 1)
+        self.DOGE_MAX_TRADE_CAP = doge_cfg.get('max_trade_cap', 200_000.0)
+        self.DOGE_MAX_CONSEC    = doge_cfg.get('max_consec_losses', 3)
+        self.DOGE_FEE           = self.taker_fee_rate
 
         self.symbols    = {
-            'SOL': 'SOL/USDT',
-            'ADA': ada_cfg.get('symbol', 'ADA/USDT'),
-            'XRP': xrp_cfg.get('symbol', 'XRP/USDT'),
+            'SOL':  'SOL/USDT',
+            'ADA':  ada_cfg.get('symbol', 'ADA/USDT'),
+            'XRP':  xrp_cfg.get('symbol', 'XRP/USDT'),
+            'DOGE': doge_cfg.get('symbol', 'DOGE/USDT'),
         }
         self.timeframes = {
-            'SOL': '15m',
-            'ADA': ada_cfg.get('timeframe', '1h'),
-            'XRP': xrp_cfg.get('timeframe', '1h'),
+            'SOL':  '15m',
+            'ADA':  ada_cfg.get('timeframe', '1h'),
+            'XRP':  xrp_cfg.get('timeframe', '1h'),
+            'DOGE': doge_cfg.get('timeframe', '1h'),
         }
         self._close_time = {}   # 記錄各策略最近平倉時間，防止 API 快取觸發雲端接管
 
@@ -100,11 +117,18 @@ class LiveTradingBot:
         self._ada_twap_size_each = 0.0
         self._ada_twap_direction = 0
 
+        # DOGE TWAP 狀態
+        self._doge_twap_active    = False
+        self._doge_twap_remaining = 0
+        self._doge_twap_size_each = 0.0
+        self._doge_twap_direction = 0
+
         # XRP 限價單狀態（方案A：無確認，掛在 Fib 水平）
         self._xrp_limit_order_id  = None   # 交易所 order ID；模擬模式用 'pending'
         self._xrp_limit_price     = 0.0    # 掛單價格（Fib 水平）
         self._xrp_limit_direction = 0      # 1 做多 / -1 做空
         self._xrp_limit_size      = 0.0    # 掛單數量
+        self._xrp_limit_placed_ts = 0.0    # 掛單時間戳（Unix 秒），用於逾時判斷
 
         self.live_trade    = self.config['system']['live_trade']
         self.check_interval = self.config['system']['check_interval']
@@ -117,21 +141,23 @@ class LiveTradingBot:
         })
 
         self.state = {
-            'SOL': self._get_default_state(),
-            'ADA': self._get_default_state(),
-            'XRP': self._get_default_state(),
+            'SOL':  self._get_default_state(),
+            'ADA':  self._get_default_state(),
+            'XRP':  self._get_default_state(),
+            'DOGE': self._get_default_state(),
         }
 
         self.load_order_state()
 
-        self.last_candle_time = {'SOL': None, 'ADA': None, 'XRP': None}
+        self.last_candle_time = {'SOL': None, 'ADA': None, 'XRP': None, 'DOGE': None}
         self.last_report_hour = -1   # 整點定時報告：記錄上次觸發的小時（台灣時間）
         self._last_status_print = -1  # 上次狀態列印的 5 分鐘時段編號
 
-        print(f"🤖 三核心機器人就緒 | 模式: {'🔴 實盤' if self.live_trade else '🟢 模擬'}")
+        print(f"🤖 四核心機器人就緒 | 模式: {'🔴 實盤' if self.live_trade else '🟢 模擬'}")
         print(f"   SOL 趨勢: {self.risk_per_trade*100}% 風險 | {self.leverage}x | 熔斷 {self.max_consec_losses} 次")
         print(f"   ADA Donchian: N={self.ADA_ENTRY_N} | Trail x{self.ADA_TRAIL_ATR} | {self.ADA_LEVERAGE}x | 熔斷 {self.ADA_MAX_CONSEC} 次")
         print(f"   XRP Fib: Swing={self.XRP_SWING_N} | Fib={self.XRP_FIB_LEVEL} | Trail x{self.XRP_TRAIL_ATR} | {self.XRP_LEVERAGE}x | 熔斷 {self.XRP_MAX_CONSEC} 次")
+        print(f"   DOGE Squeeze: BB={self.DOGE_BB_PERIOD}/{self.DOGE_BB_STD} | KC={self.DOGE_KC_PERIOD}/{self.DOGE_KC_MULT} | Trail x{self.DOGE_TRAIL_ATR} | {self.DOGE_LEVERAGE}x | 熔斷 {self.DOGE_MAX_CONSEC} 次")
 
     # ── 狀態字典 ─────────────────────────────────────────────────────
 
@@ -181,6 +207,10 @@ class LiveTradingBot:
             self._xrp_limit_price     = 0.0
             self._xrp_limit_direction = 0
             self._xrp_limit_size      = 0.0
+            self._xrp_limit_placed_ts = 0.0
+        elif strat_name == 'DOGE':
+            self._doge_twap_active    = False
+            self._doge_twap_remaining = 0
 
     # ── 持久化 ───────────────────────────────────────────────────────
 
@@ -207,6 +237,7 @@ class LiveTradingBot:
             'price':     self._xrp_limit_price,
             'direction': self._xrp_limit_direction,
             'size':      self._xrp_limit_size,
+            'placed_ts': self._xrp_limit_placed_ts,
         }
         with open(self.state_path, 'w') as f:
             json.dump(save_data, f, indent=2)
@@ -235,6 +266,7 @@ class LiveTradingBot:
                 self._xrp_limit_price     = lim.get('price', 0.0)
                 self._xrp_limit_direction = lim.get('direction', 0)
                 self._xrp_limit_size      = lim.get('size', 0.0)
+                self._xrp_limit_placed_ts = lim.get('placed_ts', 0.0)
                 if self._xrp_limit_order_id and self.state['XRP'].get('position', 0) == 0:
                     side_str = '做多' if self._xrp_limit_direction == 1 else '做空'
                     print(f"♻️  XRP 限價掛單還原：{side_str} @ {self._xrp_limit_price:.4f} | size={self._xrp_limit_size:.2f}")
@@ -344,10 +376,37 @@ class LiveTradingBot:
                     f"   連損: {xrp_s['consecutive_losses']}/{self.XRP_MAX_CONSEC}"
                 )
 
+            # DOGE 持倉
+            doge_s = self.state['DOGE']
+            if doge_s['position'] != 0:
+                try:
+                    doge_price = float(self.exchange.fetch_ticker('DOGE/USDT')['last']) if self.live_trade else doge_s['entry_price']
+                except Exception:
+                    doge_price = doge_s['entry_price']
+                unr   = (doge_price - doge_s['entry_price']) * doge_s['position_size'] * doge_s['position']
+                pnl_e = '🟢' if unr >= 0 else '🔴'
+                side  = '多單' if doge_s['position'] == 1 else '空單'
+                doge_cb = "🛡️ 保護中" if doge_s['skip_next_trade'] or doge_s['in_skip_zone'] else "🟢 正常"
+                doge_block = (
+                    f"🟤 DOGE {side} | 進場: {doge_s['entry_price']:.5f} | 現價: {doge_price:.5f}\n"
+                    f"   {pnl_e} 浮盈虧: {unr:+.2f} U | SL: {doge_s['trailing_stop']:.5f}\n"
+                    f"   熔斷: {doge_cb} | 連損: {doge_s['consecutive_losses']}/{self.DOGE_MAX_CONSEC}"
+                )
+            else:
+                try:
+                    doge_price = float(self.exchange.fetch_ticker('DOGE/USDT')['last']) if self.live_trade else 0.0
+                except Exception:
+                    doge_price = 0.0
+                cb_tag = " | 🛡️ 保護中" if doge_s['skip_next_trade'] or doge_s['in_skip_zone'] else ""
+                doge_block = (
+                    f"🟤 DOGE 空倉 | 現價: {doge_price:.5f} | 👁️ 待機{cb_tag}\n"
+                    f"   連損: {doge_s['consecutive_losses']}/{self.DOGE_MAX_CONSEC}"
+                )
+
             msg = (
                 f"⏰ **整點報告** | {now_tw.strftime('%m/%d %H:00')}\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
-                f"{sol_block}\n{ada_block}\n{xrp_block}\n"
+                f"{sol_block}\n{ada_block}\n{xrp_block}\n{doge_block}\n"
                 f"━━━━━━━━━━━━━━━━━━\n"
                 f"💰 餘額: {balance:.2f} USDT"
             )
@@ -486,6 +545,8 @@ class LiveTradingBot:
                 threshold = self.max_consec_losses
             elif strat_name == 'ADA':
                 threshold = self.ADA_MAX_CONSEC
+            elif strat_name == 'DOGE':
+                threshold = self.DOGE_MAX_CONSEC
             else:
                 threshold = self.XRP_MAX_CONSEC
             if state['consecutive_losses'] >= threshold:
@@ -604,6 +665,34 @@ class LiveTradingBot:
                 print(f"🚨 XRP 本地 Trailing 觸發")
                 self.execute_order('XRP', 'buy', state['position_size'], reason="Trailing")
 
+    # ── DOGE：ATR trailing 出場 ────────────────────────────────────
+
+    def monitor_exit_doge(self, cur_high: float, cur_low: float,
+                          cur_open: float, cur_atr: float):
+        state = self.state['DOGE']
+        if state['position'] == 0:
+            return
+        pos = state['position']
+
+        if pos == 1:
+            state['highest_price'] = max(state['highest_price'], cur_high)
+            state['trailing_stop'] = max(
+                state['trailing_stop'],
+                state['highest_price'] - self.DOGE_TRAIL_ATR * cur_atr
+            )
+            if cur_low <= state['trailing_stop']:
+                print(f"🚨 DOGE 本地 Trailing 觸發")
+                self.execute_order('DOGE', 'sell', state['position_size'], reason="Trailing")
+        elif pos == -1:
+            state['lowest_price'] = min(state['lowest_price'], cur_low)
+            state['trailing_stop'] = min(
+                state['trailing_stop'],
+                state['lowest_price'] + self.DOGE_TRAIL_ATR * cur_atr
+            )
+            if cur_high >= state['trailing_stop']:
+                print(f"🚨 DOGE 本地 Trailing 觸發")
+                self.execute_order('DOGE', 'buy', state['position_size'], reason="Trailing")
+
     # ── 同步持倉 ─────────────────────────────────────────────────────
 
     def sync_position(self):
@@ -641,6 +730,9 @@ class LiveTradingBot:
                         elif strat_name == 'XRP':
                             sl_dist    = max(self.XRP_ATR_SL_MULT * last_atr, state['entry_price'] * self.min_sl_pct)
                             trail_dist = max(self.XRP_TRAIL_ATR * last_atr, state['entry_price'] * self.min_sl_pct)
+                        elif strat_name == 'DOGE':
+                            sl_dist    = max(self.DOGE_ATR_SL_MULT * last_atr, state['entry_price'] * self.min_sl_pct)
+                            trail_dist = max(self.DOGE_TRAIL_ATR * last_atr, state['entry_price'] * self.min_sl_pct)
                         else:
                             sl_dist    = max(self.initial_sl_atr * last_atr, state['entry_price'] * self.min_sl_pct)
                             trail_dist = sl_dist
@@ -648,7 +740,7 @@ class LiveTradingBot:
                         state['trailing_stop'] = state['entry_price'] - trail_dist if state['position'] == 1 else state['entry_price'] + trail_dist
                         state['highest_price'] = state['entry_price']
                         state['lowest_price']  = state['entry_price']
-                        _lev = {'SOL': self.leverage, 'ADA': self.ADA_LEVERAGE, 'XRP': self.XRP_LEVERAGE}.get(strat_name, self.leverage)
+                        _lev = {'SOL': self.leverage, 'ADA': self.ADA_LEVERAGE, 'XRP': self.XRP_LEVERAGE, 'DOGE': self.DOGE_LEVERAGE}.get(strat_name, self.leverage)
                         state['liq_price']     = CoreStrategy.calc_liquidation_price(
                             state['entry_price'], state['position'], _lev, self.mmr)
                         print(f"🔄 {strat_name} 雲端接管 | {side.upper()} @ {state['entry_price']:.4f}")
@@ -747,8 +839,8 @@ class LiveTradingBot:
 
     def _print_status(self, cl_sol, ada_price: float = None,
                       ada_dc_high: float = None, ada_dc_low: float = None,
-                      xrp_price: float = None):
-        """每 5 分鐘統一列印 SOL + ADA + XRP 三核心狀態"""
+                      xrp_price: float = None, doge_price: float = None):
+        """每 5 分鐘統一列印 SOL + ADA + XRP + DOGE 四核心狀態"""
         now_tw = datetime.now(timezone.utc) + timedelta(hours=8)
         ts_str = now_tw.strftime('%H:%M:%S')
         sol_s  = self.state['SOL']
@@ -830,6 +922,24 @@ class LiveTradingBot:
             cb_tag = ' 🛡️熔斷' if xrp_s['skip_next_trade'] or xrp_s['in_skip_zone'] else ''
             print(f"🟣 XRP [{ts_str}] 空倉{cb_tag} | 現價: {xrp_price:.4f} | 👁️ 待機")
 
+        # ── DOGE ──────────────────────────────────────────────────
+        doge_s = self.state['DOGE']
+        if doge_price is None:
+            try:
+                doge_price = float(self.exchange.fetch_ticker('DOGE/USDT')['last']) if self.live_trade else 0.0
+            except Exception:
+                doge_price = 0.0
+
+        if doge_s['position'] != 0:
+            unr   = (doge_price - doge_s['entry_price']) * doge_s['position_size'] * doge_s['position']
+            pnl_e = '🟢' if unr >= 0 else '🔴'
+            side  = '多單' if doge_s['position'] == 1 else '空單'
+            print(f"🟤 DOGE [{ts_str}] {side} | 現價: {doge_price:.5f} | "
+                  f"{pnl_e} {unr:+.2f} U | SL {doge_s['trailing_stop']:.5f}")
+        else:
+            cb_tag = ' 🛡️熔斷' if doge_s['skip_next_trade'] or doge_s['in_skip_zone'] else ''
+            print(f"🟤 DOGE [{ts_str}] 空倉{cb_tag} | 現價: {doge_price:.5f} | 👁️ 待機")
+
         print("─" * 60)
 
     # ── 主循環 ───────────────────────────────────────────────────────
@@ -839,9 +949,10 @@ class LiveTradingBot:
         if not self.live_trade:
             return
         lev_map = {
-            'SOL': int(self.leverage),
-            'ADA': int(self.ADA_LEVERAGE),
-            'XRP': int(self.XRP_LEVERAGE),
+            'SOL':  int(self.leverage),
+            'ADA':  int(self.ADA_LEVERAGE),
+            'XRP':  int(self.XRP_LEVERAGE),
+            'DOGE': int(self.DOGE_LEVERAGE),
         }
         for strat_name, symbol in self.symbols.items():
             lev = lev_map.get(strat_name, 1)
@@ -852,7 +963,7 @@ class LiveTradingBot:
                 print(f"  ⚠️ {strat_name} 槓桿設定失敗: {e}")
 
     def run(self):
-        print(f"⏳ 三核心輪詢啟動，每 {self.check_interval}s 一次")
+        print(f"⏳ 四核心輪詢啟動，每 {self.check_interval}s 一次")
         self._set_leverage_all()
         while True:
             try:
@@ -928,7 +1039,7 @@ class LiveTradingBot:
                     self.last_candle_time['SOL'] = cl.name
                     now_tw = datetime.now(timezone.utc) + timedelta(hours=8)
 
-                    l_cond, s_cond, diag = CoreStrategy.check_signals(prev, self.adx_threshold)
+                    l_cond, s_cond, _ = CoreStrategy.check_signals(prev, self.adx_threshold)
 
                     if sol_s['skip_next_trade']:
                         if l_cond or s_cond:
@@ -995,6 +1106,7 @@ class LiveTradingBot:
                             self._sol_twap_remaining = _N - 1
                             self._sol_twap_active    = self._sol_twap_remaining > 0
                             self.save_order_state()
+                            time.sleep(1)   # 等待交易所餘額刷新，避免下一策略抓到幽靈餘額
 
 
                 # ══ ADA Donchian 突破策略 ══════════════════════════
@@ -1160,6 +1272,7 @@ class LiveTradingBot:
                                     self._ada_twap_remaining = _N - 1
                                     self._ada_twap_active    = self._ada_twap_remaining > 0
                                     self.save_order_state()
+                                    time.sleep(1)   # 等待交易所餘額刷新，避免下一策略抓到幽靈餘額
 
                                     msg = (
                                         f"🚀 **ADA Donchian 進場** | {'做多' if direction==1 else '做空'}\n"
@@ -1232,6 +1345,7 @@ class LiveTradingBot:
                                 self._xrp_limit_price     = 0.0
                                 self._xrp_limit_direction = 0
                                 self._xrp_limit_size      = 0.0
+                                self._xrp_limit_placed_ts = 0.0
                                 self.save_order_state()
                     else:
                         # 模擬：用前一根 K 棒的 L/H 判斷是否成交
@@ -1268,6 +1382,7 @@ class LiveTradingBot:
                         self._xrp_limit_price     = 0.0
                         self._xrp_limit_direction = 0
                         self._xrp_limit_size      = 0.0
+                        self._xrp_limit_placed_ts = 0.0
                         self.save_order_state()
                         now_tw = datetime.now(timezone.utc) + timedelta(hours=8)
                         msg = (
@@ -1277,6 +1392,26 @@ class LiveTradingBot:
                         )
                         print(f"[{now_tw.strftime('%H:%M:%S')}] {msg}")
                         self.send_discord_msg(msg)
+
+                    # ── 逾時自動取消（未成交時檢查）────────────────────
+                    elif (self.XRP_LIMIT_MAX_HOURS > 0 and
+                            self._xrp_limit_placed_ts > 0 and
+                            self._xrp_limit_order_id is not None and
+                            time.time() - self._xrp_limit_placed_ts > self.XRP_LIMIT_MAX_HOURS * 3600):
+                        if self.live_trade and self._xrp_limit_order_id != 'pending':
+                            try:
+                                self.exchange.cancel_order(self._xrp_limit_order_id, 'XRP/USDT')
+                            except Exception:
+                                pass
+                        self._xrp_limit_order_id  = None
+                        self._xrp_limit_price     = 0.0
+                        self._xrp_limit_direction = 0
+                        self._xrp_limit_size      = 0.0
+                        self._xrp_limit_placed_ts = 0.0
+                        self.save_order_state()
+                        now_tw = datetime.now(timezone.utc) + timedelta(hours=8)
+                        print(f"[{now_tw.strftime('%H:%M:%S')}] ⏰ XRP 限價單逾時 {self.XRP_LIMIT_MAX_HOURS}h，自動取消")
+                        self.send_discord_msg(f"⏰ XRP 限價單逾時 {self.XRP_LIMIT_MAX_HOURS}h，自動取消")
 
                 # ── 空倉掛限價單：Fib 水平（方案A：無確認）────────────
                 if self.last_candle_time['XRP'] is None:
@@ -1332,6 +1467,7 @@ class LiveTradingBot:
                             self._xrp_limit_price     = 0.0
                             self._xrp_limit_direction = 0
                             self._xrp_limit_size      = 0.0
+                            self._xrp_limit_placed_ts = 0.0
                             self.save_order_state()
                         elif abs(fib_price - self._xrp_limit_price) / self._xrp_limit_price > self.XRP_FIB_TOL * 2:
                             # Fib 水平偏移超過容差 → 取消後重新掛
@@ -1345,6 +1481,7 @@ class LiveTradingBot:
                             self._xrp_limit_price     = 0.0
                             self._xrp_limit_direction = 0
                             self._xrp_limit_size      = 0.0
+                            self._xrp_limit_placed_ts = 0.0
                             self.save_order_state()
 
                     # ── 掛新限價單（無掛單且方向有效）──────────────────
@@ -1382,6 +1519,7 @@ class LiveTradingBot:
                                     self._xrp_limit_price     = fib_price
                                     self._xrp_limit_direction = direction
                                     self._xrp_limit_size      = size
+                                    self._xrp_limit_placed_ts = time.time()
                                     self.save_order_state()
                                     print(f"[{now_tw.strftime('%H:%M:%S')}] 📋 XRP 限價單掛出 | "
                                           f"{'做多' if direction==1 else '做空'} @ {fib_price:.4f} | "
@@ -1392,6 +1530,204 @@ class LiveTradingBot:
                                         f"   Swing: {swing_high:.4f} / {swing_low:.4f}"
                                     )
 
+                # ══ DOGE BB Squeeze 策略 ══════════════════════════
+                doge_s = self.state['DOGE']
+
+                try:
+                    ohlcv_doge = self.exchange.fetch_ohlcv('DOGE/USDT', '1h', limit=500)
+                    df_doge = pd.DataFrame(ohlcv_doge, columns=['timestamp','open','high','low','close','volume'])
+                    df_doge.set_index(pd.to_datetime(df_doge['timestamp'], unit='ms'), inplace=True)
+                    df_doge = CoreStrategy.prepare_data(df_doge)
+                except Exception as e:
+                    print(f"⚠️ DOGE 資料抓取失敗: {e}")
+                    time.sleep(self.check_interval)
+                    continue
+
+                # ── 計算 BB / KC / Momentum / Squeeze ──────────────
+                doge_close_arr = df_doge['close'].values
+
+                # BB（布林帶）
+                bb_ser = pd.Series(doge_close_arr)
+                bb_mid = bb_ser.rolling(self.DOGE_BB_PERIOD).mean()
+                bb_std = bb_ser.rolling(self.DOGE_BB_PERIOD).std(ddof=0)
+                bb_up  = bb_mid + self.DOGE_BB_STD * bb_std
+                bb_lo  = bb_mid - self.DOGE_BB_STD * bb_std
+
+                # KC（Keltner Channel）：用 CoreStrategy.prepare_data 計算的 ATR
+                doge_atr_arr = df_doge['ATR'].values
+                kc_mid_ser   = bb_ser.ewm(span=self.DOGE_KC_PERIOD, adjust=False).mean()
+                kc_mid = kc_mid_ser.values
+                kc_up  = kc_mid + self.DOGE_KC_MULT * doge_atr_arr
+                kc_lo  = kc_mid - self.DOGE_KC_MULT * doge_atr_arr
+
+                # Momentum
+                mom_arr = bb_ser.diff(self.DOGE_MOM_PERIOD).values
+
+                # Squeeze：BB 在 KC 內 = squeeze=1；釋放 = squeeze=0
+                sq_arr = np.where(
+                    (bb_up.values <= kc_up) & (bb_lo.values >= kc_lo), 1, 0
+                )
+
+                cl_doge   = df_doge.iloc[-1]
+                prev_doge = df_doge.iloc[-2]
+                doge_close = float(cl_doge.close)
+                doge_atr   = float(cl_doge.ATR)
+                di         = len(df_doge) - 1   # current bar index
+
+                # ── 持倉中：監控出場 ──────────────────────────────
+                doge_had_position = doge_s['position'] != 0
+                if doge_s['position'] != 0:
+                    self.monitor_exit_doge(float(cl_doge.high), float(cl_doge.low),
+                                           float(cl_doge.open), doge_atr)
+                    if doge_s['position'] == 0:
+                        self.last_candle_time['DOGE'] = cl_doge.name
+
+                # ── DOGE TWAP 後續子單（新 K 棒 + 持倉中 + 尚有剩餘子單）─
+                if (self.last_candle_time['DOGE'] != cl_doge.name and
+                        doge_s['position'] != 0 and
+                        self._doge_twap_active and self._doge_twap_remaining > 0 and
+                        doge_s['position'] == self._doge_twap_direction):
+                    self.last_candle_time['DOGE'] = cl_doge.name
+                    if self.live_trade:
+                        bal_data = self.exchange.fetch_balance()
+                        free_bal = float(bal_data['free']['USDT'])
+                    else:
+                        free_bal = self.capital
+                    max_by_margin = (free_bal * self.DOGE_LEVERAGE) / float(cl_doge.open)
+                    sub_size = min(self._doge_twap_size_each, max_by_margin)
+                    if sub_size > 0:
+                        side = 'buy' if doge_s['position'] == 1 else 'sell'
+                        if self.live_trade:
+                            try:
+                                sub_size_str = self.exchange.amount_to_precision('DOGE/USDT', sub_size)
+                                order = self.exchange.create_order('DOGE/USDT', 'market', side, sub_size_str)
+                                sub_ep = float(order.get('average') or cl_doge.open)
+                            except Exception as e:
+                                print(f"⚠️ DOGE TWAP 子單失敗: {e}")
+                                sub_ep = None
+                        else:
+                            print(f"[模擬] DOGE TWAP 追加 | {side.upper()} | size={sub_size:.0f} | 剩餘 {self._doge_twap_remaining}")
+                            sub_ep = float(cl_doge.open)
+                        if sub_ep is not None:
+                            total_sz = doge_s['position_size'] + sub_size
+                            doge_s['entry_price']   = (doge_s['entry_price'] * doge_s['position_size'] + sub_ep * sub_size) / total_sz
+                            doge_s['position_size'] = total_sz
+                            doge_s['liq_price']     = CoreStrategy.calc_liquidation_price(
+                                doge_s['entry_price'], doge_s['position'], self.DOGE_LEVERAGE, self.mmr)
+                            self._doge_twap_remaining -= 1
+                            if self._doge_twap_remaining == 0:
+                                self._doge_twap_active = False
+                            self.send_discord_msg(
+                                f"📦 DOGE TWAP 子單 | 均價 {doge_s['entry_price']:.5f} | "
+                                f"總量 {doge_s['position_size']:.0f} | 剩餘 {self._doge_twap_remaining} 筆")
+
+                # ── 空倉入場：BB Squeeze 釋放訊號 ───────────────────
+                if self.last_candle_time['DOGE'] is None:
+                    self.last_candle_time['DOGE'] = cl_doge.name
+                elif self.last_candle_time['DOGE'] != cl_doge.name and doge_s['position'] == 0 and not doge_had_position:
+                    self.last_candle_time['DOGE'] = cl_doge.name
+
+                    # 用已收盤 K 棒（prev_doge，即 di-1）偵測 squeeze fire
+                    # fire = 前根壓縮（sq=1）、本根釋放（sq=0）
+                    pi = di - 1   # prev_doge 的 index
+                    is_fire = (pi >= 1 and
+                               sq_arr[pi - 1] == 1 and sq_arr[pi] == 0 and
+                               not np.isnan(doge_atr_arr[pi]) and doge_atr_arr[pi] > 0)
+
+                    direction = 0
+                    if is_fire:
+                        direction = 1 if mom_arr[pi] > 0 else -1
+
+                    # 熔斷邏輯
+                    if doge_s['skip_next_trade']:
+                        if direction != 0:
+                            doge_s['skip_next_trade'] = False
+                            doge_s['in_skip_zone']    = True
+                            self.save_order_state()
+                            self.send_discord_msg("🛡️ DOGE 熔斷保護觸發，進入免疫區間")
+                        direction = 0
+                    elif doge_s['in_skip_zone']:
+                        if direction == 0:
+                            doge_s['in_skip_zone'] = False
+                            self.save_order_state()
+                            print("🔓 DOGE 熔斷解除")
+                        direction = 0
+
+                    # 平倉後 60 秒內不重新下單
+                    if (time.time() - self._close_time.get('DOGE', 0)) < 60:
+                        direction = 0
+
+                    if direction != 0:
+                        d_atr_prev = float(doge_atr_arr[pi])   # 前根 ATR（無前視）
+                        risk_per_unit = self.DOGE_ATR_SL_MULT * d_atr_prev
+                        if risk_per_unit > 0:
+                            if self.live_trade:
+                                bal_data  = self.exchange.fetch_balance()
+                                total_bal = float(bal_data['total']['USDT'])
+                                free_bal  = float(bal_data['free']['USDT'])
+                            else:
+                                total_bal = free_bal = self.capital
+
+                            # 自適應 TWAP：計算 N
+                            _N = max(1, int(total_bal * self.DOGE_LEVERAGE / self.DOGE_MAX_TRADE_CAP))
+                            if _N == 1:
+                                # 可用保證金 × 40%（free_bal 已扣除其他幣種鎖倉保證金）
+                                size = (free_bal * 0.40 * self.DOGE_LEVERAGE) / float(cl_doge.open)
+                            else:
+                                size = self.DOGE_MAX_TRADE_CAP / float(cl_doge.open)
+
+                            sl_dist    = max(self.DOGE_ATR_SL_MULT * d_atr_prev, float(cl_doge.open) * self.min_sl_pct)
+                            trail_dist = max(self.DOGE_TRAIL_ATR * d_atr_prev, float(cl_doge.open) * self.min_sl_pct)
+
+                            if size > 0:
+                                now_tw = datetime.now(timezone.utc) + timedelta(hours=8)
+                                print(f"[{now_tw.strftime('%H:%M:%S')}] 🟤 DOGE Squeeze 訊號 | "
+                                      f"{'做多' if direction == 1 else '做空'} | Mom: {mom_arr[pi]:.6f}")
+
+                                if direction == 1:
+                                    order = self.execute_order('DOGE', 'buy', size, reason="DOGE Squeeze 做多")
+                                    if order is None:
+                                        print("⚠️ DOGE 做多市價單失敗，放棄本次進場")
+                                    else:
+                                        ep = float(order.get('average') or cl_doge.open)
+                                        doge_s['position']      = 1
+                                        doge_s['position_size'] = size
+                                        doge_s['entry_price']   = ep
+                                        doge_s['stop_loss']     = ep - sl_dist
+                                        doge_s['trailing_stop'] = ep - trail_dist
+                                        doge_s['highest_price'] = ep
+                                        doge_s['liq_price']     = CoreStrategy.calc_liquidation_price(ep, 1, self.DOGE_LEVERAGE, self.mmr)
+                                        self.execute_order('DOGE', 'sell', stop_price=doge_s['stop_loss'])
+                                else:
+                                    order = self.execute_order('DOGE', 'sell', size, reason="DOGE Squeeze 做空")
+                                    if order is None:
+                                        print("⚠️ DOGE 做空市價單失敗，放棄本次進場")
+                                    else:
+                                        ep = float(order.get('average') or cl_doge.open)
+                                        doge_s['position']      = -1
+                                        doge_s['position_size'] = size
+                                        doge_s['entry_price']   = ep
+                                        doge_s['stop_loss']     = ep + sl_dist
+                                        doge_s['trailing_stop'] = ep + trail_dist
+                                        doge_s['lowest_price']  = ep
+                                        doge_s['liq_price']     = CoreStrategy.calc_liquidation_price(ep, -1, self.DOGE_LEVERAGE, self.mmr)
+                                        self.execute_order('DOGE', 'buy', stop_price=doge_s['stop_loss'])
+
+                                if doge_s['position'] != 0:
+                                    self._doge_twap_direction = doge_s['position']
+                                    self._doge_twap_size_each = (self.DOGE_MAX_TRADE_CAP / doge_s['entry_price']) if _N > 1 else size
+                                    self._doge_twap_remaining = _N - 1
+                                    self._doge_twap_active    = self._doge_twap_remaining > 0
+                                    self.save_order_state()
+                                    time.sleep(1)   # 等待交易所餘額刷新（保持一致性）
+
+                                    msg = (
+                                        f"🚀 **DOGE Squeeze 進場** | {'做多' if direction==1 else '做空'}\n"
+                                        f"   進場: {doge_s['entry_price']:.5f} | SL: {doge_s['stop_loss']:.5f}\n"
+                                        f"   size: {doge_s['position_size']:.0f} | TWAP剩餘: {self._doge_twap_remaining}"
+                                    )
+                                    self.send_discord_msg(msg)
+
                 # 狀態列印：每逢整 5 分鐘（:00, :05, :10 ...）印一次
                 now_tw = datetime.now(timezone.utc) + timedelta(hours=8)
                 _cur_slot = now_tw.hour * 60 + now_tw.minute - now_tw.minute % 5
@@ -1399,7 +1735,8 @@ class LiveTradingBot:
                     self._last_status_print = _cur_slot
                     self._print_status(cl, ada_price=ada_close,
                                        ada_dc_high=dc_high, ada_dc_low=dc_low,
-                                       xrp_price=xrp_close)
+                                       xrp_price=xrp_close,
+                                       doge_price=doge_close)
 
             except Exception as e:
                 import traceback

@@ -47,7 +47,8 @@
         "risk_pct": 0.15,
         "leverage": 1,
         "max_trade_cap": 200000,
-        "max_consec_losses": 3
+        "max_consec_losses": 3,
+        "xrp_limit_max_hours": 0
     },
     "doge_squeeze": {
         "symbol": "DOGE/USDT",
