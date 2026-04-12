@@ -283,6 +283,10 @@ def run_triple(config, label: str = ""):
                         sol_twap_remaining -= 1
                         if sol_twap_remaining == 0:
                             sol_twap_active = False
+                else:
+                    # 保證金不足無法進場，重置 TWAP 等待下次訊號
+                    sol_twap_active    = False
+                    sol_twap_remaining = 0
 
                 sol_long_sig = sol_short_sig = False
 
