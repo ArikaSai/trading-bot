@@ -518,12 +518,12 @@ def run_triple(config, label: str = ""):
                 xrp_pending_bars += 1
                 tol = xrp_pending_price * xrp_fib_tol
                 filled = False
-                # 做多：本根 Low 觸及 Fib 且收盤在 Fib 上方（反彈確認）
-                if xrp_pending_dir == 1 and x_L <= xrp_pending_price + tol and x_C > xrp_pending_price:
+                # 做多：本根 Low 觸及 Fib → 限價單成交（不需收盤確認，與交易所行為一致）
+                if xrp_pending_dir == 1 and x_L <= xrp_pending_price + tol:
                     fill_p = min(x_O, xrp_pending_price) * (1 + SLIPPAGE)
                     filled = True
-                # 做空：本根 High 觸及 Fib 且收盤在 Fib 下方（反彈確認）
-                elif xrp_pending_dir == -1 and x_H >= xrp_pending_price - tol and x_C < xrp_pending_price:
+                # 做空：本根 High 觸及 Fib → 限價單成交
+                elif xrp_pending_dir == -1 and x_H >= xrp_pending_price - tol:
                     fill_p = max(x_O, xrp_pending_price) * (1 - SLIPPAGE)
                     filled = True
 
@@ -531,7 +531,10 @@ def run_triple(config, label: str = ""):
                     other_margin = sol_margin_used + ada_margin_used + doge_margin_used
                     free_margin  = max(0.0, capital - other_margin)
                     if free_margin > 10:
-                        size = free_margin * _FREE_PCT * xrp_leverage / fill_p
+                        N            = max(1, int(free_margin / xrp_max_cap))
+                        alloc_margin = free_margin * _FREE_PCT
+                        size = (alloc_margin * xrp_leverage / fill_p
+                                if N == 1 else xrp_max_cap * xrp_leverage / fill_p)
                         if size > 0:
                             xrp_entry     = fill_p
                             xrp_entry_fee = size * xrp_entry * xrp_fee
