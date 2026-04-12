@@ -3,7 +3,7 @@
         "exchange_id": "binance",
         "api_key": "api_key",
         "api_secret": "api_secret",
-        "discord_webhook_url": "discord_webhook_url"  
+        "discord_webhook_url": "discord_webhook_url"
     },
     "trading": {
         "symbol": "SOL/USDT",
@@ -32,6 +32,7 @@
         "trail_atr": 3.0,
         "atr_sl_mult": 2.0,
         "risk_pct": 0.15,
+        "leverage": 1,
         "max_trade_cap": 200000,
         "max_consec_losses": 3
     },
@@ -44,12 +45,13 @@
         "fib_tol": 0.005,
         "atr_sl_mult": 2.0,
         "risk_pct": 0.15,
+        "leverage": 1,
         "max_trade_cap": 200000,
         "max_consec_losses": 3
     },
     "backtest": {
-        "start_date": "2023-01-01",
-        "end_date": "2026-04-09"
+        "start_date": "2020-01-01",
+        "end_date": "2026-04-11"
     },
     "system": {
         "live_trade": true,

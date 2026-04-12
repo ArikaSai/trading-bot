@@ -842,9 +842,9 @@ _SCHEME_COLORS = {
 def main():
     parser = argparse.ArgumentParser(description='三策略聯合回測')
     parser.add_argument(
-        '--scheme', default='all',
+        '--scheme', default='free_b',
         choices=['tier', 'free_a', 'free_b', 'all'],
-        help='保證金方案 (預設: all = 三種全跑並比較)'
+        help='保證金方案 (預設: free_b = 實盤方案；all = 三種全跑並比較)'
     )
     args = parser.parse_args()
 
@@ -898,14 +898,14 @@ def main():
         sol_eq = _build_single_equity(r['sol_trades'], initial_cap, time_index)
         ada_eq = _build_single_equity(r['ada_trades'], initial_cap, time_index)
         xrp_eq = _build_single_equity(r['xrp_trades'], initial_cap, time_index)
-        ax.plot(sol_eq.index, sol_eq.clip(lower=_floor), color="#EC9950", linewidth=1.2,
+        ax.plot(sol_eq.index, sol_eq.clip(lower=_floor), color="#D58035", linewidth=1.0,
                 alpha=0.75, label=f"SOL (獨立) +{r['sol_pnl']:,.0f}")
-        ax.plot(ada_eq.index, ada_eq.clip(lower=_floor), color="#44C744", linewidth=1.2,
+        ax.plot(ada_eq.index, ada_eq.clip(lower=_floor), color="#44C744", linewidth=1.0,
                 alpha=0.75, label=f"ADA (獨立) +{r['ada_pnl']:,.0f}")
-        ax.plot(xrp_eq.index, xrp_eq.clip(lower=_floor), color="#E069E0", linewidth=1.2,
+        ax.plot(xrp_eq.index, xrp_eq.clip(lower=_floor), color="#E069E0", linewidth=1.0,
                 alpha=0.75, label=f"XRP (獨立) +{r['xrp_pnl']:,.0f}")
         ax.plot(pd.DatetimeIndex(eq['timestamp']), eq['equity'].clip(lower=_floor),
-                color=_SCHEME_COLORS[schemes[0]], linewidth=1.8,
+                color=_SCHEME_COLORS[schemes[0]], linewidth=1.2,
                 label=f"聯合 {r['label']}  +{r['ret%']:.0f}%")
         title = f"三策略聯合 {r['label']} | MDD {r['mdd%']:+.1f}% | Sharpe {r['sharpe']:.3f}"
     else:
@@ -913,7 +913,7 @@ def main():
         for s, r in results.items():
             eq = r['equity_df']
             ax.plot(pd.DatetimeIndex(eq['timestamp']), eq['equity'].clip(lower=_floor),
-                    color=_SCHEME_COLORS[s], linewidth=1.6,
+                    color=_SCHEME_COLORS[s], linewidth=1.2,
                     label=f"{r['label']}  MDD{r['mdd%']:+.1f}%  +{r['ret%']:.0f}%")
         title = "三策略聯合 — 保證金方案比較"
 

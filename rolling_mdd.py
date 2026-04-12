@@ -31,7 +31,7 @@ def main():
     args = parser.parse_args()
 
     WINDOW = args.window
-    scheme_label = '先到先得 40/20/10'
+    scheme_label = '可用×40% 直接用'
 
     config = load_config()
     initial_cap = config['risk']['initial_capital']
@@ -67,7 +67,7 @@ def main():
         }
 
         try:
-            r = run_triple(cfg, label=f"{s.strftime('%Y-%m')} ~ {e.strftime('%Y-%m')}")
+            r = run_triple(cfg, label=f"{s.strftime('%Y-%m')} ~ {e.strftime('%Y-%m')}", scheme='free_b')
         except Exception as ex:
             print(f"  [{j}/{len(starts)}] {s.strftime('%Y-%m')} 跳過: {ex}")
             continue
