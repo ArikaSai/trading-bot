@@ -1,6 +1,7 @@
 config.json
 order_state_dual.json
 __pycache__/
+prop_firm/
 *.pyc
 data/
 *.png
