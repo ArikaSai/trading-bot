@@ -111,6 +111,14 @@ class LiveTradingBot:
         self._consol_lows     = _deque(maxlen=8)
         self._consol_last_ts  = None   # 防止同一根 K 棒重複 append
 
+        # ADA / XRP / DOGE 盤整縮緊：N=6, X=1.5, tight=0.5×；插針防護：3.0×ATR
+        self._ada_consol_highs  = _deque(maxlen=6)
+        self._ada_consol_lows   = _deque(maxlen=6)
+        self._xrp_consol_highs  = _deque(maxlen=6)
+        self._xrp_consol_lows   = _deque(maxlen=6)
+        self._doge_consol_highs = _deque(maxlen=6)
+        self._doge_consol_lows  = _deque(maxlen=6)
+
         # ADA TWAP 狀態
         self._ada_twap_active    = False
         self._ada_twap_remaining = 0
@@ -202,8 +210,12 @@ class LiveTradingBot:
         elif strat_name == 'ADA':
             self._ada_twap_active    = False
             self._ada_twap_remaining = 0
+            self._ada_consol_highs.clear()
+            self._ada_consol_lows.clear()
         elif strat_name == 'XRP':
             self._xrp_limit_order_id  = None
+            self._xrp_consol_highs.clear()
+            self._xrp_consol_lows.clear()
             self._xrp_limit_price     = 0.0
             self._xrp_limit_direction = 0
             self._xrp_limit_size      = 0.0
@@ -211,6 +223,8 @@ class LiveTradingBot:
         elif strat_name == 'DOGE':
             self._doge_twap_active    = False
             self._doge_twap_remaining = 0
+            self._doge_consol_highs.clear()
+            self._doge_consol_lows.clear()
 
     # ── 持久化 ───────────────────────────────────────────────────────
 
@@ -615,27 +629,38 @@ class LiveTradingBot:
             return
         pos = state['position']
 
-        # ATR trailing stop 更新
+        # 插針防護：3.0×ATR 插針改用收盤價更新追蹤參考點
+        is_spike = cur_atr > 0 and (cur_high - cur_low) > 3.0 * cur_atr
+        ref_high = cur_open if (is_spike and pos == 1)  else cur_high
+        ref_low  = cur_open if (is_spike and pos == -1) else cur_low
+
+        # 盤整縮緊：N=6, X=1.5, tight=0.5×ATR
+        self._ada_consol_highs.append(cur_high)
+        self._ada_consol_lows.append(cur_low)
+        if len(self._ada_consol_highs) == 6 and cur_atr > 0:
+            _is_consol = (max(self._ada_consol_highs) - min(self._ada_consol_lows)) < 1.5 * cur_atr
+            _eff_trail = 0.5 if _is_consol else self.ADA_TRAIL_ATR
+        else:
+            _eff_trail = self.ADA_TRAIL_ATR
+
         if pos == 1:
-            state['highest_price'] = max(state['highest_price'], cur_high)
+            state['highest_price'] = max(state['highest_price'], ref_high)
             state['trailing_stop'] = max(
                 state['trailing_stop'],
-                state['highest_price'] - self.ADA_TRAIL_ATR * cur_atr
+                state['highest_price'] - _eff_trail * cur_atr
             )
             if cur_low <= state['trailing_stop']:
-                side = 'sell'
                 print(f"🚨 ADA 本地 Trailing 觸發")
-                self.execute_order('ADA', side, state['position_size'], reason="Trailing")
+                self.execute_order('ADA', 'sell', state['position_size'], reason="Trailing")
         elif pos == -1:
-            state['lowest_price'] = min(state['lowest_price'], cur_low)
+            state['lowest_price'] = min(state['lowest_price'], ref_low)
             state['trailing_stop'] = min(
                 state['trailing_stop'],
-                state['lowest_price'] + self.ADA_TRAIL_ATR * cur_atr
+                state['lowest_price'] + _eff_trail * cur_atr
             )
             if cur_high >= state['trailing_stop']:
-                side = 'buy'
                 print(f"🚨 ADA 本地 Trailing 觸發")
-                self.execute_order('ADA', side, state['position_size'], reason="Trailing")
+                self.execute_order('ADA', 'buy', state['position_size'], reason="Trailing")
 
     # ── XRP：ATR trailing 出場 ─────────────────────────────────────────
 
@@ -646,20 +671,34 @@ class LiveTradingBot:
             return
         pos = state['position']
 
+        # 插針防護：3.0×ATR
+        is_spike = cur_atr > 0 and (cur_high - cur_low) > 3.0 * cur_atr
+        ref_high = cur_open if (is_spike and pos == 1)  else cur_high
+        ref_low  = cur_open if (is_spike and pos == -1) else cur_low
+
+        # 盤整縮緊：N=6, X=1.5, tight=0.5×ATR
+        self._xrp_consol_highs.append(cur_high)
+        self._xrp_consol_lows.append(cur_low)
+        if len(self._xrp_consol_highs) == 6 and cur_atr > 0:
+            _is_consol = (max(self._xrp_consol_highs) - min(self._xrp_consol_lows)) < 1.5 * cur_atr
+            _eff_trail = 0.5 if _is_consol else self.XRP_TRAIL_ATR
+        else:
+            _eff_trail = self.XRP_TRAIL_ATR
+
         if pos == 1:
-            state['highest_price'] = max(state['highest_price'], cur_high)
+            state['highest_price'] = max(state['highest_price'], ref_high)
             state['trailing_stop'] = max(
                 state['trailing_stop'],
-                state['highest_price'] - self.XRP_TRAIL_ATR * cur_atr
+                state['highest_price'] - _eff_trail * cur_atr
             )
             if cur_low <= state['trailing_stop']:
                 print(f"🚨 XRP 本地 Trailing 觸發")
                 self.execute_order('XRP', 'sell', state['position_size'], reason="Trailing")
         elif pos == -1:
-            state['lowest_price'] = min(state['lowest_price'], cur_low)
+            state['lowest_price'] = min(state['lowest_price'], ref_low)
             state['trailing_stop'] = min(
                 state['trailing_stop'],
-                state['lowest_price'] + self.XRP_TRAIL_ATR * cur_atr
+                state['lowest_price'] + _eff_trail * cur_atr
             )
             if cur_high >= state['trailing_stop']:
                 print(f"🚨 XRP 本地 Trailing 觸發")
@@ -674,20 +713,34 @@ class LiveTradingBot:
             return
         pos = state['position']
 
+        # 插針防護：3.0×ATR
+        is_spike = cur_atr > 0 and (cur_high - cur_low) > 3.0 * cur_atr
+        ref_high = cur_open if (is_spike and pos == 1)  else cur_high
+        ref_low  = cur_open if (is_spike and pos == -1) else cur_low
+
+        # 盤整縮緊：N=6, X=1.5, tight=0.5×ATR
+        self._doge_consol_highs.append(cur_high)
+        self._doge_consol_lows.append(cur_low)
+        if len(self._doge_consol_highs) == 6 and cur_atr > 0:
+            _is_consol = (max(self._doge_consol_highs) - min(self._doge_consol_lows)) < 1.5 * cur_atr
+            _eff_trail = 0.5 if _is_consol else self.DOGE_TRAIL_ATR
+        else:
+            _eff_trail = self.DOGE_TRAIL_ATR
+
         if pos == 1:
-            state['highest_price'] = max(state['highest_price'], cur_high)
+            state['highest_price'] = max(state['highest_price'], ref_high)
             state['trailing_stop'] = max(
                 state['trailing_stop'],
-                state['highest_price'] - self.DOGE_TRAIL_ATR * cur_atr
+                state['highest_price'] - _eff_trail * cur_atr
             )
             if cur_low <= state['trailing_stop']:
                 print(f"🚨 DOGE 本地 Trailing 觸發")
                 self.execute_order('DOGE', 'sell', state['position_size'], reason="Trailing")
         elif pos == -1:
-            state['lowest_price'] = min(state['lowest_price'], cur_low)
+            state['lowest_price'] = min(state['lowest_price'], ref_low)
             state['trailing_stop'] = min(
                 state['trailing_stop'],
-                state['lowest_price'] + self.DOGE_TRAIL_ATR * cur_atr
+                state['lowest_price'] + _eff_trail * cur_atr
             )
             if cur_high >= state['trailing_stop']:
                 print(f"🚨 DOGE 本地 Trailing 觸發")

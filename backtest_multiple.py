@@ -44,7 +44,9 @@ def load_csv(symbol: str, timeframe: str) -> pd.DataFrame:
     return df
 
 
-def run_triple(config, label: str = ""):
+def run_triple(config, label: str = "",
+               consol_n: int = 6, consol_x: float = 1.5,
+               tight_trail: float = 0.5, spike_mult: float = 3.0):
     # ── 載入資料 ─────────────────────────────────────────────
     sol_tf  = config['trading'].get('timeframe', '15m')
     df_sol  = load_csv('SOL',  sol_tf)
@@ -188,6 +190,12 @@ def run_triple(config, label: str = ""):
     _sol_consol_highs = _deque(maxlen=8)
     _sol_consol_lows  = _deque(maxlen=8)
     prev_sol_ts = None
+
+    # ── Feature deque（盤整縮緊，三策略共用參數）─────────────
+    _cn = consol_n if consol_n > 0 else 1  # deque 最小 1，disabled 時不讀取
+    _ada_ch  = _deque(maxlen=_cn); _ada_cl  = _deque(maxlen=_cn)
+    _xrp_ch  = _deque(maxlen=_cn); _xrp_cl  = _deque(maxlen=_cn)
+    _doge_ch = _deque(maxlen=_cn); _doge_cl = _deque(maxlen=_cn)
 
     # ── ADA 狀態 ─────────────────────────────────────────────
     ada_pos = 0; ada_size = 0.0; ada_entry = 0.0
@@ -449,14 +457,24 @@ def run_triple(config, label: str = ""):
             # ── ADA 出場 ─────────────────────────────────────
             if ada_pos != 0:
                 closed_ada = False; xp = 0.0
+                # 插針防護
+                _a_spike = spike_mult > 0 and a_atr > 0 and (a_H - a_L) > spike_mult * a_atr
+                a_ref_H  = a_C if (_a_spike and ada_pos == 1)  else a_H
+                a_ref_L  = a_C if (_a_spike and ada_pos == -1) else a_L
+                # 盤整縮緊
+                _ada_ch.append(a_H); _ada_cl.append(a_L)
+                if consol_n > 0 and len(_ada_ch) == consol_n and a_atr > 0:
+                    _a_eff = tight_trail if (max(_ada_ch) - min(_ada_cl)) < consol_x * a_atr else ada_trail
+                else:
+                    _a_eff = ada_trail
                 if ada_pos == 1:
-                    ada_hp  = max(ada_hp, a_H)
-                    ada_tsl = max(ada_tsl, ada_hp - ada_trail * a_atr)
+                    ada_hp  = max(ada_hp, a_ref_H)
+                    ada_tsl = max(ada_tsl, ada_hp - _a_eff * a_atr)
                     if a_L <= ada_tsl:
                         xp = max(ada_tsl, a_O) * (1 - SLIPPAGE); closed_ada = True
                 elif ada_pos == -1:
-                    ada_lp  = min(ada_lp, a_L)
-                    ada_tsl = min(ada_tsl, ada_lp + ada_trail * a_atr)
+                    ada_lp  = min(ada_lp, a_ref_L)
+                    ada_tsl = min(ada_tsl, ada_lp + _a_eff * a_atr)
                     if a_H >= ada_tsl:
                         xp = min(ada_tsl, a_O) * (1 + SLIPPAGE); closed_ada = True
 
@@ -469,6 +487,7 @@ def run_triple(config, label: str = ""):
                     ada_pos = 0; ada_size = 0.0; ada_entry_fee = 0.0
                     ada_margin_used  = 0.0
                     ada_twap_active  = False; ada_twap_remaining = 0; ada_twap_pending = False
+                    _ada_ch.clear(); _ada_cl.clear()
                     if net < 0:
                         ada_consec += 1
                         if ada_consec >= ada_max_loss:
@@ -557,14 +576,24 @@ def run_triple(config, label: str = ""):
             # ── XRP 出場 ─────────────────────────────────────
             if xrp_pos != 0:
                 closed_xrp = False; xp = 0.0
+                # 插針防護
+                _x_spike = spike_mult > 0 and x_atr > 0 and (x_H - x_L) > spike_mult * x_atr
+                x_ref_H  = x_C if (_x_spike and xrp_pos == 1)  else x_H
+                x_ref_L  = x_C if (_x_spike and xrp_pos == -1) else x_L
+                # 盤整縮緊
+                _xrp_ch.append(x_H); _xrp_cl.append(x_L)
+                if consol_n > 0 and len(_xrp_ch) == consol_n and x_atr > 0:
+                    _x_eff = tight_trail if (max(_xrp_ch) - min(_xrp_cl)) < consol_x * x_atr else xrp_trail
+                else:
+                    _x_eff = xrp_trail
                 if xrp_pos == 1:
-                    xrp_hp  = max(xrp_hp, x_H)
-                    xrp_tsl = max(xrp_tsl, xrp_hp - xrp_trail * x_atr)
+                    xrp_hp  = max(xrp_hp, x_ref_H)
+                    xrp_tsl = max(xrp_tsl, xrp_hp - _x_eff * x_atr)
                     if x_L <= xrp_tsl:
                         xp = max(xrp_tsl, x_O) * (1 - SLIPPAGE); closed_xrp = True
                 elif xrp_pos == -1:
-                    xrp_lp  = min(xrp_lp, x_L)
-                    xrp_tsl = min(xrp_tsl, xrp_lp + xrp_trail * x_atr)
+                    xrp_lp  = min(xrp_lp, x_ref_L)
+                    xrp_tsl = min(xrp_tsl, xrp_lp + _x_eff * x_atr)
                     if x_H >= xrp_tsl:
                         xp = min(xrp_tsl, x_O) * (1 + SLIPPAGE); closed_xrp = True
 
@@ -576,6 +605,7 @@ def run_triple(config, label: str = ""):
                     xrp_trades.append({'Time': ts, 'Strategy': 'XRP', 'PnL': net, 'Cap': capital})
                     xrp_pos = 0; xrp_size = 0.0; xrp_entry_fee = 0.0
                     xrp_margin_used = 0.0
+                    _xrp_ch.clear(); _xrp_cl.clear()
                     if net < 0:
                         xrp_consec += 1
                         if xrp_consec >= xrp_max_loss:
@@ -665,14 +695,24 @@ def run_triple(config, label: str = ""):
             # ── DOGE 出場 ────────────────────────────────────
             if doge_pos != 0:
                 closed_doge = False; xp = 0.0
+                # 插針防護
+                _d_spike = spike_mult > 0 and d_atr > 0 and (d_H - d_L) > spike_mult * d_atr
+                d_ref_H  = d_C if (_d_spike and doge_pos == 1)  else d_H
+                d_ref_L  = d_C if (_d_spike and doge_pos == -1) else d_L
+                # 盤整縮緊
+                _doge_ch.append(d_H); _doge_cl.append(d_L)
+                if consol_n > 0 and len(_doge_ch) == consol_n and d_atr > 0:
+                    _d_eff = tight_trail if (max(_doge_ch) - min(_doge_cl)) < consol_x * d_atr else doge_trail
+                else:
+                    _d_eff = doge_trail
                 if doge_pos == 1:
-                    doge_hp  = max(doge_hp, d_H)
-                    doge_tsl = max(doge_tsl, doge_hp - doge_trail * d_atr)
+                    doge_hp  = max(doge_hp, d_ref_H)
+                    doge_tsl = max(doge_tsl, doge_hp - _d_eff * d_atr)
                     if d_L <= doge_tsl:
                         xp = max(doge_tsl, d_O) * (1 - SLIPPAGE); closed_doge = True
                 elif doge_pos == -1:
-                    doge_lp  = min(doge_lp, d_L)
-                    doge_tsl = min(doge_tsl, doge_lp + doge_trail * d_atr)
+                    doge_lp  = min(doge_lp, d_ref_L)
+                    doge_tsl = min(doge_tsl, doge_lp + _d_eff * d_atr)
                     if d_H >= doge_tsl:
                         xp = min(doge_tsl, d_O) * (1 + SLIPPAGE); closed_doge = True
 
@@ -683,6 +723,7 @@ def run_triple(config, label: str = ""):
                     capital += gross - x_fee
                     doge_trades.append({'Time': ts, 'Strategy': 'DOGE', 'PnL': net, 'Cap': capital})
                     doge_pos = 0; doge_size = 0.0; doge_entry_fee = 0.0
+                    _doge_ch.clear(); _doge_cl.clear()
                     doge_margin_used  = 0.0
                     doge_twap_active  = False; doge_twap_remaining = 0; doge_twap_pending = False
                     if net < 0:
