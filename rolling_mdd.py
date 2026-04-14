@@ -65,7 +65,8 @@ def main():
         }
 
         try:
-            r = run_triple(cfg, label=f"{s.strftime('%Y-%m')} ~ {e.strftime('%Y-%m')}")
+            r = run_triple(cfg, label=f"{s.strftime('%Y-%m')} ~ {e.strftime('%Y-%m')}",
+                           consol_n=6, consol_x=1.5, tight_trail=0.5, spike_mult=3.0)
         except Exception as ex:
             print(f"  [{j}/{len(starts)}] {s.strftime('%Y-%m')} 跳過: {ex}")
             continue
