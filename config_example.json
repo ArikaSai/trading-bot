@@ -65,8 +65,8 @@
         "max_consec_losses": 3
     },
     "backtest": {
-        "start_date": "2020-01-01",
-        "end_date": "2026-04-11"
+        "start_date": "2023-01-01",
+        "end_date": "2026-04-13"
     },
     "system": {
         "live_trade": true,
