@@ -148,9 +148,9 @@ def main():
 
     fig.autofmt_xdate()
     plt.tight_layout()
-    plt.savefig('triple_rolling_mdd.png', dpi=150)
+    plt.savefig('multiple_rolling_mdd.png', dpi=150)
     plt.show()
-    print(f"\n  圖表已儲存: triple_rolling_mdd.png")
+    print(f"\n  圖表已儲存: multiple_rolling_mdd.png")
 
 
 if __name__ == '__main__':
