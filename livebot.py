@@ -164,6 +164,13 @@ class LiveTradingBot:
         self.last_report_hour = -1   # 整點定時報告：記錄上次觸發的小時（台灣時間）
         self._last_status_print = -1  # 上次狀態列印的 5 分鐘時段編號
 
+        # ── 週報 ─────────────────────────────────────────────────
+        self.weekly_discord_url       = self.config['api'].get('weekly_report_webhook_url', '')
+        self._weekly_trades: list     = []
+        self._last_weekly_report_date = ''    # "YYYY-MM-DD"（每週一發送後記錄，防重複）
+        self._week_start_capital      = self.capital
+        self._load_weekly_trades()
+
         print(f"🤖 四核心機器人就緒 | 模式: {'🔴 實盤' if self.live_trade else '🟢 模擬'}")
         print(f"   SOL 趨勢: {self.risk_per_trade*100}% 風險 | {self.leverage}x | 熔斷 {self.max_consec_losses} 次")
         print(f"   ADA Donchian: N={self.ADA_ENTRY_N} | Trail x{self.ADA_TRAIL_ATR} | {self.ADA_LEVERAGE}x | 熔斷 {self.ADA_MAX_CONSEC} 次")
@@ -302,6 +309,206 @@ class LiveTradingBot:
             requests.post(self.discord_url, json={"content": message}, timeout=5)
         except Exception:
             pass
+
+    # ── 週報 ─────────────────────────────────────────────────────────
+
+    def _load_weekly_trades(self):
+        """從 weekly_trades.json 還原本週交易記錄"""
+        path = 'weekly_trades.json'
+        try:
+            if os.path.exists(path):
+                with open(path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                self._weekly_trades           = data.get('trades', [])
+                self._last_weekly_report_date = data.get('last_report_date', '')
+                self._week_start_capital      = data.get('week_start_capital', self.capital)
+        except Exception as e:
+            print(f"⚠️ weekly_trades 讀取失敗: {e}")
+
+    def _save_weekly_trades(self):
+        """持久化週交易記錄"""
+        try:
+            with open('weekly_trades.json', 'w', encoding='utf-8') as f:
+                json.dump({
+                    'trades':             self._weekly_trades,
+                    'last_report_date':   self._last_weekly_report_date,
+                    'week_start_capital': self._week_start_capital,
+                }, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"⚠️ weekly_trades 儲存失敗: {e}")
+
+    def _record_trade(self, coin: str, net_pnl: float, margin: float, initial_risk: float):
+        """平倉時記錄一筆交易，供週報使用"""
+        now_tw = datetime.now(timezone.utc) + timedelta(hours=8)
+        self._weekly_trades.append({
+            'exit_time':    now_tw.strftime('%m/%d %H:%M'),
+            'coin':         coin,
+            'net_pnl':      round(net_pnl, 4),
+            'margin':       round(margin, 4),
+            'initial_risk': round(initial_risk, 4),
+        })
+        self._save_weekly_trades()
+
+    def _build_weekly_report(self) -> list:
+        """建立週報，回傳最多 2 段 Discord 訊息（各 ≤ 1990 字）"""
+        now_tw = datetime.now(timezone.utc) + timedelta(hours=8)
+        last_mon = now_tw - timedelta(days=7)
+        period   = f"{last_mon.strftime('%Y/%m/%d')} ~ {(now_tw - timedelta(days=1)).strftime('%Y/%m/%d')}"
+
+        trades = self._weekly_trades
+        if not trades:
+            return [f"📊 **週報 {period}**\n本週無交易記錄。"]
+
+        # 計算各筆 ROI / R 倍數
+        records = []
+        for t in trades:
+            roi = t['net_pnl'] / t['margin'] * 100 if t.get('margin', 0) > 0 else 0.0
+            r   = t['net_pnl'] / t['initial_risk'] if t.get('initial_risk', 0) > 0 else None
+            records.append({**t, 'roi': roi, 'r': r})
+
+        # ── 訊息 1：交易明細 ──────────────────────────────────────
+        lines = [f"📊 **週報 {period}**\n", "**📋 交易明細**", "```"]
+        lines.append(f"{'#':>2}  {'出場時間':<12} {'幣':>4}  {'淨利(U)':>8}  {'ROI':>7}  {'R倍數':>7}")
+        lines.append("─" * 54)
+        for i, rec in enumerate(records, 1):
+            r_str = f"{rec['r']:+.2f}R" if rec['r'] is not None else "   N/A"
+            lines.append(
+                f"{i:>2}  {rec['exit_time']:<12} {rec['coin']:>4}  "
+                f"{rec['net_pnl']:>+8.2f}  {rec['roi']:>+6.1f}%  {r_str:>7}"
+            )
+        lines.append("```")
+        msg1 = "\n".join(lines)
+        if len(msg1) > 1990:
+            # 超長時截斷，保留前 N 筆
+            short = [f"📊 **週報 {period}**\n", "**📋 交易明細**（節錄）", "```"]
+            short.append(f"{'#':>2}  {'出場時間':<12} {'幣':>4}  {'淨利(U)':>8}  {'ROI':>7}  {'R倍數':>7}")
+            short.append("─" * 54)
+            for i, rec in enumerate(records, 1):
+                r_str = f"{rec['r']:+.2f}R" if rec['r'] is not None else "   N/A"
+                row = (f"{i:>2}  {rec['exit_time']:<12} {rec['coin']:>4}  "
+                       f"{rec['net_pnl']:>+8.2f}  {rec['roi']:>+6.1f}%  {r_str:>7}")
+                if len("\n".join(short)) + len(row) + 10 > 1960:
+                    short.append(f"... 共 {len(records)} 筆")
+                    break
+                short.append(row)
+            short.append("```")
+            msg1 = "\n".join(short)
+
+        # ── 訊息 2：幣種統計 + 總結算 ────────────────────────────
+        coins_order = ['SOL', 'ADA', 'XRP', 'DOGE']
+        coin_stats  = {}
+        for coin in coins_order:
+            ct = [rec for rec in records if rec['coin'] == coin]
+            if not ct:
+                continue
+            wins        = [rec['net_pnl'] for rec in ct if rec['net_pnl'] > 0]
+            total_pnl   = sum(rec['net_pnl'] for rec in ct)
+            total_margin = sum(rec['margin'] for rec in ct)
+            coin_stats[coin] = {
+                'n':   len(ct),
+                'wr':  len(wins) / len(ct) * 100,
+                'pnl': total_pnl,
+                'roi': total_pnl / total_margin * 100 if total_margin > 0 else 0.0,
+            }
+
+        total_pnl_all = sum(rec['net_pnl'] for rec in records)
+        s2 = ["**📈 幣種統計**", "```"]
+        s2.append(f"{'幣':>4}  {'次數':>4}  {'勝率':>6}  {'淨利(U)':>9}  {'ROI':>7}  {'貢獻%':>7}")
+        s2.append("─" * 54)
+        for coin, cs in coin_stats.items():
+            contrib = cs['pnl'] / total_pnl_all * 100 if total_pnl_all != 0 else 0.0
+            s2.append(
+                f"{coin:>4}  {cs['n']:>4}  {cs['wr']:>5.1f}%  "
+                f"{cs['pnl']:>+9.2f}  {cs['roi']:>+6.1f}%  {contrib:>+6.1f}%"
+            )
+        s2.append("```")
+
+        # 總結算指標
+        n_trades   = len(records)
+        n_wins     = sum(1 for rec in records if rec['net_pnl'] > 0)
+        win_rate   = n_wins / n_trades * 100
+        gross_win  = sum(rec['net_pnl'] for rec in records if rec['net_pnl'] > 0)
+        gross_loss = abs(sum(rec['net_pnl'] for rec in records if rec['net_pnl'] <= 0))
+        pf         = gross_win / gross_loss if gross_loss > 0 else float('inf')
+        pf_str     = f"{pf:.2f}" if pf != float('inf') else "∞"
+
+        # 夏普值（依日淨利）
+        daily: dict = {}
+        for t in trades:
+            day = t['exit_time'][:5]
+            daily[day] = daily.get(day, 0.0) + t['net_pnl']
+        dpnls = list(daily.values())
+        if len(dpnls) >= 2:
+            mu     = np.mean(dpnls)
+            std    = np.std(dpnls, ddof=1)
+            sharpe_str = f"{mu / std:.2f}" if std > 0 else "0.00"
+        else:
+            sharpe_str = "N/A"
+
+        # MDD（資金曲線）
+        equity   = self._week_start_capital
+        peak     = equity
+        mdd_abs  = 0.0
+        for rec in records:
+            equity += rec['net_pnl']
+            if equity > peak:
+                peak = equity
+            dd = peak - equity
+            if dd > mdd_abs:
+                mdd_abs = dd
+        mdd_pct     = mdd_abs / self._week_start_capital * 100 if self._week_start_capital > 0 else 0.0
+        overall_roi = total_pnl_all / self._week_start_capital * 100 if self._week_start_capital > 0 else 0.0
+
+        s3 = ["**📊 總結算**", "```"]
+        s3.append(f"交易次數: {n_trades:<6}  勝率:   {win_rate:.1f}%")
+        s3.append(f"淨利:  {total_pnl_all:>+10.2f} U   ROI:    {overall_roi:>+7.1f}%")
+        s3.append(f"盈虧比: {pf_str:>9}    夏普值: {sharpe_str}")
+        s3.append(f"MDD:   {mdd_abs:>10.2f} U  ({mdd_pct:.1f}%)")
+        s3.append("```")
+
+        msg2 = "\n".join(s2 + [""] + s3)
+        return [msg1, msg2]
+
+    def send_weekly_report(self):
+        """每週一 00:00（台灣時間）發送上週週報至第二 Discord 頻道，並重置週記錄"""
+        now_tw = datetime.now(timezone.utc) + timedelta(hours=8)
+        # 觸發條件：週一 00:00~00:09，且本日尚未發送過
+        if not (now_tw.weekday() == 0 and now_tw.hour == 0 and now_tw.minute < 10):
+            return
+        today_str = now_tw.strftime('%Y-%m-%d')
+        if today_str == self._last_weekly_report_date:
+            return
+
+        # 估算週初資金 = 現在餘額 − 本週累計損益
+        if self.live_trade:
+            try:
+                cur_bal          = float(self.exchange.fetch_balance()['total']['USDT'])
+                week_pnl         = sum(t['net_pnl'] for t in self._weekly_trades)
+                self._week_start_capital = cur_bal - week_pnl
+            except Exception:
+                pass
+
+        msgs = self._build_weekly_report()
+        url  = self.weekly_discord_url
+        for msg in msgs:
+            print(msg)
+            if url and "你的" not in url:
+                try:
+                    requests.post(url, json={"content": msg}, timeout=10)
+                    time.sleep(0.5)
+                except Exception as e:
+                    print(f"⚠️ 週報發送失敗: {e}")
+
+        # 重置，準備新的一週
+        self._last_weekly_report_date = today_str
+        self._weekly_trades           = []
+        if self.live_trade:
+            try:
+                self._week_start_capital = float(self.exchange.fetch_balance()['total']['USDT'])
+            except Exception:
+                pass
+        self._save_weekly_trades()
+        print("✅ 週報已發送，週記錄已重置")
 
     # ── 報告（FIX-6：改用 self.state 字典）──────────────────────────
 
@@ -539,6 +746,11 @@ class LiveTradingBot:
                 if net > 0:
                     self.show_milestone_progress(net)
                 self._update_loss_state(strat_name, net)
+                # 週報記錄
+                _lev    = {'SOL': self.leverage, 'ADA': self.ADA_LEVERAGE,
+                           'XRP': self.XRP_LEVERAGE, 'DOGE': self.DOGE_LEVERAGE}.get(strat_name, 1)
+                _margin = state['entry_price'] * state['position_size'] / _lev
+                self._record_trade(strat_name, net, _margin, initial_risk)
                 self.reset_position_state(strat_name)
                 self.save_order_state()
 
@@ -804,6 +1016,9 @@ class LiveTradingBot:
                                            stop_price=state['stop_loss'])
                 else:
                     if state['position'] != 0:
+                        _rec_net  = None
+                        _rec_margin = 0.0
+                        _rec_risk   = 0.0
                         try:
                             exit_price = float(self.exchange.fetch_ticker(symbol)['last'])
                             gross        = (exit_price - state['entry_price']) * state['position_size'] * state['position']
@@ -818,8 +1033,16 @@ class LiveTradingBot:
                             if net > 0:
                                 self.show_milestone_progress(net)
                             self._update_loss_state(strat_name, net)
+                            # 週報記錄
+                            _lev         = {'SOL': self.leverage, 'ADA': self.ADA_LEVERAGE,
+                                            'XRP': self.XRP_LEVERAGE, 'DOGE': self.DOGE_LEVERAGE}.get(strat_name, 1)
+                            _rec_net     = net
+                            _rec_margin  = state['entry_price'] * state['position_size'] / _lev
+                            _rec_risk    = initial_risk
                         except Exception as e:
                             print(f"⚠️ {strat_name} 補算 PnL 失敗: {e}")
+                        if _rec_net is not None:
+                            self._record_trade(strat_name, _rec_net, _rec_margin, _rec_risk)
                         self.reset_position_state(strat_name)
                         self.save_order_state()
         except Exception as e:
@@ -1022,6 +1245,7 @@ class LiveTradingBot:
             try:
                 self.sync_position()
                 self.send_periodic_report()
+                self.send_weekly_report()
 
                 # ══ SOL 趨勢策略 ══════════════════════════════════
                 ohlcv  = self.exchange.fetch_ohlcv('SOL/USDT', '15m', limit=500)
