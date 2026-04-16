@@ -1015,9 +1015,9 @@ def main():
     ax.legend(loc='upper left', fontsize=9)
     ax.grid(True, alpha=0.3)
     plt.tight_layout()
-    plt.savefig('triple_backtest.png', dpi=150)
+    plt.savefig('multiple_backtest.png', dpi=150)
     plt.show()
-    print(f"\n  圖表已儲存: triple_backtest.png")
+    print(f"\n  圖表已儲存: multiple_backtest.png")
 
 
 if __name__ == '__main__':

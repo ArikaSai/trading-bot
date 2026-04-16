@@ -112,12 +112,15 @@ class LiveTradingBot:
         self._consol_last_ts  = None   # 防止同一根 K 棒重複 append
 
         # ADA / XRP / DOGE 盤整縮緊：N=6, X=1.5, tight=0.5×；插針防護：3.0×ATR
-        self._ada_consol_highs  = _deque(maxlen=6)
-        self._ada_consol_lows   = _deque(maxlen=6)
-        self._xrp_consol_highs  = _deque(maxlen=6)
-        self._xrp_consol_lows   = _deque(maxlen=6)
-        self._doge_consol_highs = _deque(maxlen=6)
-        self._doge_consol_lows  = _deque(maxlen=6)
+        self._ada_consol_highs   = _deque(maxlen=6)
+        self._ada_consol_lows    = _deque(maxlen=6)
+        self._ada_consol_last_ts = None   # 防止同一根 K 棒重複 append（對齊 SOL）
+        self._xrp_consol_highs   = _deque(maxlen=6)
+        self._xrp_consol_lows    = _deque(maxlen=6)
+        self._xrp_consol_last_ts = None
+        self._doge_consol_highs  = _deque(maxlen=6)
+        self._doge_consol_lows   = _deque(maxlen=6)
+        self._doge_consol_last_ts = None
 
         # ADA TWAP 狀態
         self._ada_twap_active    = False
@@ -212,10 +215,12 @@ class LiveTradingBot:
             self._ada_twap_remaining = 0
             self._ada_consol_highs.clear()
             self._ada_consol_lows.clear()
+            self._ada_consol_last_ts = None
         elif strat_name == 'XRP':
             self._xrp_limit_order_id  = None
             self._xrp_consol_highs.clear()
             self._xrp_consol_lows.clear()
+            self._xrp_consol_last_ts  = None
             self._xrp_limit_price     = 0.0
             self._xrp_limit_direction = 0
             self._xrp_limit_size      = 0.0
@@ -225,6 +230,7 @@ class LiveTradingBot:
             self._doge_twap_remaining = 0
             self._doge_consol_highs.clear()
             self._doge_consol_lows.clear()
+            self._doge_consol_last_ts = None
 
     # ── 持久化 ───────────────────────────────────────────────────────
 
@@ -634,9 +640,7 @@ class LiveTradingBot:
         ref_high = cur_open if (is_spike and pos == 1)  else cur_high
         ref_low  = cur_open if (is_spike and pos == -1) else cur_low
 
-        # 盤整縮緊：N=6, X=1.5, tight=0.5×ATR
-        self._ada_consol_highs.append(cur_high)
-        self._ada_consol_lows.append(cur_low)
+        # 盤整縮緊：N=6, X=1.5, tight=0.5×ATR（deque 由主迴圈在新 K 棒時 append，此處只讀取）
         if len(self._ada_consol_highs) == 6 and cur_atr > 0:
             _is_consol = (max(self._ada_consol_highs) - min(self._ada_consol_lows)) < 1.5 * cur_atr
             _eff_trail = 0.5 if _is_consol else self.ADA_TRAIL_ATR
@@ -676,9 +680,7 @@ class LiveTradingBot:
         ref_high = cur_open if (is_spike and pos == 1)  else cur_high
         ref_low  = cur_open if (is_spike and pos == -1) else cur_low
 
-        # 盤整縮緊：N=6, X=1.5, tight=0.5×ATR
-        self._xrp_consol_highs.append(cur_high)
-        self._xrp_consol_lows.append(cur_low)
+        # 盤整縮緊：N=6, X=1.5, tight=0.5×ATR（deque 由主迴圈在新 K 棒時 append，此處只讀取）
         if len(self._xrp_consol_highs) == 6 and cur_atr > 0:
             _is_consol = (max(self._xrp_consol_highs) - min(self._xrp_consol_lows)) < 1.5 * cur_atr
             _eff_trail = 0.5 if _is_consol else self.XRP_TRAIL_ATR
@@ -718,9 +720,7 @@ class LiveTradingBot:
         ref_high = cur_open if (is_spike and pos == 1)  else cur_high
         ref_low  = cur_open if (is_spike and pos == -1) else cur_low
 
-        # 盤整縮緊：N=6, X=1.5, tight=0.5×ATR
-        self._doge_consol_highs.append(cur_high)
-        self._doge_consol_lows.append(cur_low)
+        # 盤整縮緊：N=6, X=1.5, tight=0.5×ATR（deque 由主迴圈在新 K 棒時 append，此處只讀取）
         if len(self._doge_consol_highs) == 6 and cur_atr > 0:
             _is_consol = (max(self._doge_consol_highs) - min(self._doge_consol_lows)) < 1.5 * cur_atr
             _eff_trail = 0.5 if _is_consol else self.DOGE_TRAIL_ATR
@@ -1190,6 +1190,12 @@ class LiveTradingBot:
                 else:
                     dc_high = dc_low = ada_close
 
+                # ── 盤整縮緊 deque：每根新 K 棒只 append 一次已收盤的 prev（對齊回測）
+                if ada_s['position'] != 0 and cl_ada.name != self._ada_consol_last_ts:
+                    self._ada_consol_highs.append(float(prev_ada.high))
+                    self._ada_consol_lows.append(float(prev_ada.low))
+                    self._ada_consol_last_ts = cl_ada.name
+
                 # ── 持倉中：監控出場 + TWAP 追加 ─────────────────
                 ada_had_position = ada_s['position'] != 0
                 if ada_s['position'] != 0:
@@ -1368,6 +1374,12 @@ class LiveTradingBot:
                 else:
                     swing_high = swing_low = xrp_close
                     _xhi_idx = _xlo_idx = 0
+
+                # ── 盤整縮緊 deque：每根新 K 棒只 append 一次已收盤的 prev（對齊回測）
+                if xrp_s['position'] != 0 and cl_xrp.name != self._xrp_consol_last_ts:
+                    self._xrp_consol_highs.append(float(prev_xrp.high))
+                    self._xrp_consol_lows.append(float(prev_xrp.low))
+                    self._xrp_consol_last_ts = cl_xrp.name
 
                 # ── 持倉中：監控出場 + TWAP 追加 ─────────────────
                 xrp_had_position = xrp_s['position'] != 0
@@ -1626,6 +1638,12 @@ class LiveTradingBot:
                 doge_close = float(cl_doge.close)
                 doge_atr   = float(cl_doge.ATR)
                 di         = len(df_doge) - 1   # current bar index
+
+                # ── 盤整縮緊 deque：每根新 K 棒只 append 一次已收盤的 prev（對齊回測）
+                if doge_s['position'] != 0 and cl_doge.name != self._doge_consol_last_ts:
+                    self._doge_consol_highs.append(float(prev_doge.high))
+                    self._doge_consol_lows.append(float(prev_doge.low))
+                    self._doge_consol_last_ts = cl_doge.name
 
                 # ── 持倉中：監控出場 ──────────────────────────────
                 doge_had_position = doge_s['position'] != 0
