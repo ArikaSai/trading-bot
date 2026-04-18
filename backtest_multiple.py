@@ -836,12 +836,32 @@ def run_triple(config, label: str = "",
         avg_l  = sum(losses) / len(losses) if losses else 0.0
         return total, wr, pf, pnl, avg_w, avg_l
 
+    def _max_consec(trades):
+        """計算最大連虧次數（trades 需已按時間排序）"""
+        max_streak = 0
+        streak     = 0
+        for t in trades:
+            if t['PnL'] <= 0:
+                streak    += 1
+                max_streak = max(max_streak, streak)
+            else:
+                streak = 0
+        return max_streak
+
     sol_n,  sol_wr,  sol_pf,  sol_pnl,  sol_avgw,  sol_avgl  = _stats(sol_trades)
     ada_n,  ada_wr,  ada_pf,  ada_pnl,  ada_avgw,  ada_avgl  = _stats(ada_trades)
     xrp_n,  xrp_wr,  xrp_pf,  xrp_pnl,  xrp_avgw,  xrp_avgl  = _stats(xrp_trades)
     doge_n, doge_wr, doge_pf, doge_pnl, doge_avgw, doge_avgl = _stats(doge_trades)
     all_n,  all_wr,  all_pf,  _,         _,         _         = _stats(
         sol_trades + ada_trades + xrp_trades + doge_trades)
+
+    sol_max_consec  = _max_consec(sol_trades)
+    ada_max_consec  = _max_consec(ada_trades)
+    xrp_max_consec  = _max_consec(xrp_trades)
+    doge_max_consec = _max_consec(doge_trades)
+    all_combined    = sorted(sol_trades + ada_trades + xrp_trades + doge_trades,
+                             key=lambda t: t['Time'])
+    all_max_consec  = _max_consec(all_combined)
 
     # Sharpe
     sharpe = 0.0
@@ -867,6 +887,11 @@ def run_triple(config, label: str = "",
         'doge_n': doge_n, 'doge_wr': doge_wr, 'doge_pf': doge_pf, 'doge_pnl': doge_pnl,
         'doge_avgw': doge_avgw, 'doge_avgl': doge_avgl,
         'all_n':  all_n,  'all_wr':  all_wr,  'all_pf':  all_pf,
+        'sol_max_consec':  sol_max_consec,
+        'ada_max_consec':  ada_max_consec,
+        'xrp_max_consec':  xrp_max_consec,
+        'doge_max_consec': doge_max_consec,
+        'all_max_consec':  all_max_consec,
         'simul_2': simul_2, 'simul_3': simul_3, 'simul_4': simul_4,
         'equity_df':   eq_df,
         'sol_trades':  sol_trades,
@@ -908,17 +933,17 @@ def _yearly_table(trades, label):
 
 
 def print_result(r):
-    print(f"\n  {'='*72}")
+    print(f"\n  {'='*24}")
     print(f"  {r['label']}")
-    print(f"  {'='*72}")
+    print(f"  {'='*24}")
     print(f"  最終資金:   ${r['final']:,.2f}")
     print(f"  總報酬:     {r['ret%']:+,.1f}%")
     print(f"  最大回撤:   {r['mdd%']:+.1f}%")
     print(f"  Sharpe:     {r['sharpe']:.3f}")
     print(f"  總 PF:      {r['all_pf']:.2f}")
     print()
-    print(f"  {'策略':<6} {'交易數':>6} {'勝率%':>8} {'PF':>7} {'盈虧比':>7} {'損益':>16}")
-    print(f"  {'-'*58}")
+    print(f"  {'策略':<6} {'交易數':>6} {'勝率%':>8} {'PF':>7} {'盈虧比':>7} {'最大連虧':>8} {'損益':>16}")
+    print(f"  {'-'*66}")
     for key, name in [('sol', 'SOL'), ('ada', 'ADA'), ('xrp', 'XRP'), ('doge', 'DOGE')]:
         n    = r[f'{key}_n']
         wr   = r[f'{key}_wr']
@@ -926,9 +951,11 @@ def print_result(r):
         pnl  = r[f'{key}_pnl']
         avgw = r[f'{key}_avgw']
         avgl = r[f'{key}_avgl']
+        mc   = r[f'{key}_max_consec']
         rr   = abs(avgw / avgl) if avgl != 0 else 0
-        print(f"  {name:<6} {n:>6} {wr:>7.1f}% {pf:>7.2f} {rr:>7.2f} {pnl:>+15,.2f}")
-    print(f"  {'合計':<6} {r['all_n']:>6} {r['all_wr']:>7.1f}% {r['all_pf']:>7.2f}")
+        print(f"  {name:<6} {n:>6} {wr:>7.1f}% {pf:>7.2f} {rr:>7.2f} {mc:>8} {pnl:>+15,.2f}")
+    print(f"  {'合計':<6} {r['all_n']:>6} {r['all_wr']:>7.1f}% {r['all_pf']:>7.2f} "
+          f"{'':>7} {r['all_max_consec']:>8}")
     print()
     print(f"  同時持倉 2 策略: {r['simul_2']:,} 根 K 棒")
     print(f"  同時持倉 3 策略: {r['simul_3']:,} 根 K 棒")

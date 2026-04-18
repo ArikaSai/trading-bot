@@ -51,7 +51,7 @@ def main():
     print(f"四策略聯合滾動 MDD")
     print(f"  方案: 可用×40% 直接用 | 窗口: {WINDOW} 個月")
     print(f"  期間: {first_date.strftime('%Y-%m-%d')} ~ {last_date.strftime('%Y-%m-%d')}")
-    print(f"  槓桿: {config['risk'].get('leverage', 2)}x | 初始: ${initial_cap}")
+    print(f"  SOL 槓桿: {config['risk'].get('leverage', 2)}x | 初始: ${initial_cap}")
     print(f"  共 {len(starts)} 個滾動窗口\n")
 
     results = []
