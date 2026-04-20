@@ -151,6 +151,5 @@ def main():
     plt.savefig(out, dpi=150, bbox_inches='tight')
     print(f"\n圖表已存: {out}")
 
-
 if __name__ == '__main__':
     main()

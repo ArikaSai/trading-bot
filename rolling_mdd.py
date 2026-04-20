@@ -4,8 +4,8 @@ rolling_mdd.py
 四策略聯合滾動回測 — 每月滾動，找出歷史最差區間
 
 用法:
-    python rolling_mdd.py                  # 預設 3 個月窗口
-    python rolling_mdd.py --window 6       # 6 個月窗口
+    python rolling_mdd.py                 # 預設 3 個月窗口
+    python rolling_mdd.py --window 6      # 6 個月窗口
 """
 
 import argparse

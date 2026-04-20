@@ -10,6 +10,8 @@ import os
 from datetime import datetime, timedelta, timezone
 from strategy import CoreStrategy
 
+SKIP_EXPIRY_HOURS = 1.0   # 熔斷後超過此時間無訊號 → 自動解除，與回測一致
+
 # ADA Donchian 參數：在 __init__ 中從 config['ada_donchian'] 讀取
 
 
@@ -194,6 +196,7 @@ class LiveTradingBot:
             "consecutive_losses": 0,
             "skip_next_trade":    False,     # SOL / ADA 熔斷
             "in_skip_zone":       False,     # SOL / ADA 熔斷
+            "skip_expiry":        None,      # 熔斷時效 (ISO str, CST)
         }
 
     # FIX-1: 移除舊的無參數版本，唯一定義帶 strat_name 的正確版本
@@ -258,6 +261,7 @@ class LiveTradingBot:
                 "consecutive_losses": data["consecutive_losses"],
                 "skip_next_trade":    data["skip_next_trade"],
                 "in_skip_zone":       data["in_skip_zone"],
+                "skip_expiry":        data.get("skip_expiry"),
             }
         save_data['_xrp_limit'] = {
             'order_id':  self._xrp_limit_order_id,
@@ -784,6 +788,8 @@ class LiveTradingBot:
             if state['consecutive_losses'] >= threshold:
                 state['consecutive_losses'] = 0
                 state['skip_next_trade'] = True
+                now_cst = datetime.now(timezone.utc) + timedelta(hours=8)
+                state['skip_expiry'] = (now_cst + timedelta(hours=SKIP_EXPIRY_HOURS)).isoformat()
                 msg = f"🚨 **{strat_name} 觸發連虧熔斷** | 連損 {threshold} 次"
                 print(msg); self.send_discord_msg(msg)
 
@@ -1319,7 +1325,12 @@ class LiveTradingBot:
                     l_cond, s_cond, _ = CoreStrategy.check_signals(prev, self.adx_threshold)
 
                     if sol_s['skip_next_trade']:
-                        if l_cond or s_cond:
+                        expiry = sol_s.get('skip_expiry')
+                        if expiry and now_tw > datetime.fromisoformat(expiry):
+                            sol_s['skip_next_trade'] = False
+                            sol_s['skip_expiry']     = None
+                            print("🔓 SOL 熔斷已過期自動解除")
+                        elif l_cond or s_cond:
                             sol_s['skip_next_trade'] = False
                             sol_s['in_skip_zone']    = True
                             self.save_order_state()
@@ -1483,7 +1494,13 @@ class LiveTradingBot:
 
                     # 熔斷邏輯
                     if ada_s['skip_next_trade']:
-                        if direction != 0:
+                        _now = datetime.now(timezone.utc) + timedelta(hours=8)
+                        expiry = ada_s.get('skip_expiry')
+                        if expiry and _now > datetime.fromisoformat(expiry):
+                            ada_s['skip_next_trade'] = False
+                            ada_s['skip_expiry']     = None
+                            print("🔓 ADA 熔斷已過期自動解除")
+                        elif direction != 0:
                             ada_s['skip_next_trade'] = False
                             ada_s['in_skip_zone']    = True
                             self.save_order_state()
@@ -1723,7 +1740,13 @@ class LiveTradingBot:
 
                     # 熔斷邏輯
                     if xrp_s['skip_next_trade']:
-                        if direction != 0:
+                        _now = datetime.now(timezone.utc) + timedelta(hours=8)
+                        _exp = xrp_s.get('skip_expiry')
+                        if _exp and _now > datetime.fromisoformat(_exp):
+                            xrp_s['skip_next_trade'] = False
+                            xrp_s['skip_expiry']     = None
+                            print("🔓 XRP 熔斷已過期自動解除")
+                        elif direction != 0:
                             xrp_s['skip_next_trade'] = False
                             xrp_s['in_skip_zone']    = True
                             self.save_order_state()
@@ -1935,7 +1958,13 @@ class LiveTradingBot:
 
                     # 熔斷邏輯
                     if doge_s['skip_next_trade']:
-                        if direction != 0:
+                        _now = datetime.now(timezone.utc) + timedelta(hours=8)
+                        _exp = doge_s.get('skip_expiry')
+                        if _exp and _now > datetime.fromisoformat(_exp):
+                            doge_s['skip_next_trade'] = False
+                            doge_s['skip_expiry']     = None
+                            print("🔓 DOGE 熔斷已過期自動解除")
+                        elif direction != 0:
                             doge_s['skip_next_trade'] = False
                             doge_s['in_skip_zone']    = True
                             self.save_order_state()

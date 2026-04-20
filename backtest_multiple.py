@@ -1,7 +1,7 @@
 """
 backtest_multiple.py
 ════════════════════
-SOL 趨勢 + ADA 唐奇安 + XRP 斐波 + DOGE Squeeze  四策略共用資金聯合回測
+SOL 趨勢 + ADA 唐奇安 + XRP 斐波 + DOGE Squeeze 四策略共用資金聯合回測
 
 資金方案：free_b（可用保證金 × 40%，直接用）
 時間軸  ：SOL 15m + ADA / XRP / DOGE 1h 合併排序
@@ -46,7 +46,8 @@ def load_csv(symbol: str, timeframe: str) -> pd.DataFrame:
 
 def run_triple(config, label: str = "",
                consol_n: int = 6, consol_x: float = 1.5,
-               tight_trail: float = 0.5, spike_mult: float = 3.0):
+               tight_trail: float = 0.5, spike_mult: float = 3.0,
+               skip_hours: float = 1.0):
     # ── 載入資料 ─────────────────────────────────────────────
     sol_tf  = config['trading'].get('timeframe', '15m')
     df_sol  = load_csv('SOL',  sol_tf)
@@ -180,7 +181,7 @@ def run_triple(config, label: str = "",
     sol_high = 0.0; sol_low = float('inf')
     sol_entry_fee = 0.0
     sol_long_sig = False; sol_short_sig = False
-    sol_consec = 0; sol_skip = False; sol_in_skip = False
+    sol_consec = 0; sol_skip = False; sol_in_skip = False; sol_skip_ts = None
     sol_be_activated = False
     sol_saved_sl_dist = 0.0
     sol_margin_used = 0.0
@@ -201,7 +202,7 @@ def run_triple(config, label: str = "",
     ada_pos = 0; ada_size = 0.0; ada_entry = 0.0
     ada_tsl = 0.0; ada_hp = 0.0; ada_lp = float('inf')
     ada_entry_fee = 0.0; ada_margin_used = 0.0
-    ada_consec = 0; ada_skip = False; ada_in_skip = False
+    ada_consec = 0; ada_skip = False; ada_in_skip = False; ada_skip_ts = None
     ada_trades = []
     ada_twap_active = False; ada_twap_remaining = 0
     ada_twap_size_each = 0.0; ada_twap_direction = 0
@@ -211,7 +212,7 @@ def run_triple(config, label: str = "",
     xrp_pos = 0; xrp_size = 0.0; xrp_entry = 0.0
     xrp_tsl = 0.0; xrp_hp = 0.0; xrp_lp = float('inf')
     xrp_entry_fee = 0.0; xrp_margin_used = 0.0
-    xrp_consec = 0; xrp_skip = False; xrp_in_skip = False
+    xrp_consec = 0; xrp_skip = False; xrp_in_skip = False; xrp_skip_ts = None
     xrp_pending_dir   = 0
     xrp_pending_price = 0.0   # 掛單 Fib 水平
     xrp_pending_bars  = 0     # 掛單後已過的 bar 數
@@ -221,7 +222,7 @@ def run_triple(config, label: str = "",
     doge_pos = 0; doge_size = 0.0; doge_entry = 0.0
     doge_tsl = 0.0; doge_hp = 0.0; doge_lp = float('inf')
     doge_entry_fee = 0.0; doge_margin_used = 0.0
-    doge_consec = 0; doge_skip = False; doge_in_skip = False
+    doge_consec = 0; doge_skip = False; doge_in_skip = False; doge_skip_ts = None
     doge_trades = []
     doge_twap_active = False; doge_twap_remaining = 0
     doge_twap_size_each = 0.0; doge_twap_direction = 0
@@ -366,7 +367,7 @@ def run_triple(config, label: str = "",
                 if net_pnl < 0:
                     sol_consec += 1
                     if sol_consec >= sol_max_loss:
-                        sol_skip = True; sol_in_skip = False; sol_consec = 0
+                        sol_skip = True; sol_in_skip = False; sol_consec = 0; sol_skip_ts = ts
                 else:
                     sol_consec = 0
 
@@ -374,7 +375,9 @@ def run_triple(config, label: str = "",
             if sol_pos == 0 and not sol_twap_active and ts != prev_sol_ts:
                 l_cond, s_cond, _ = CoreStrategy.check_signals(row, sol_adx_th)
                 if sol_skip:
-                    if l_cond or s_cond:
+                    if skip_hours > 0 and sol_skip_ts and (ts - sol_skip_ts) > pd.Timedelta(hours=skip_hours):
+                        sol_skip = False; sol_skip_ts = None   # 時效過期，自動解除
+                    elif l_cond or s_cond:
                         sol_skip = False; sol_in_skip = True
                 elif sol_in_skip:
                     if not l_cond and not s_cond:
@@ -491,7 +494,7 @@ def run_triple(config, label: str = "",
                     if net < 0:
                         ada_consec += 1
                         if ada_consec >= ada_max_loss:
-                            ada_skip = True; ada_in_skip = False; ada_consec = 0
+                            ada_skip = True; ada_in_skip = False; ada_consec = 0; ada_skip_ts = ts
                     else:
                         ada_consec = 0
 
@@ -500,7 +503,9 @@ def run_triple(config, label: str = "",
                 has_signal = (a_C > dc_high) or (a_C < dc_low)
 
                 if ada_skip:
-                    if has_signal:
+                    if skip_hours > 0 and ada_skip_ts and (ts - ada_skip_ts) > pd.Timedelta(hours=skip_hours):
+                        ada_skip = False; ada_skip_ts = None
+                    elif has_signal:
                         ada_skip = False; ada_in_skip = True
                 elif ada_in_skip:
                     if not has_signal:
@@ -609,7 +614,7 @@ def run_triple(config, label: str = "",
                     if net < 0:
                         xrp_consec += 1
                         if xrp_consec >= xrp_max_loss:
-                            xrp_skip = True; xrp_in_skip = False; xrp_consec = 0
+                            xrp_skip = True; xrp_in_skip = False; xrp_consec = 0; xrp_skip_ts = ts
                     else:
                         xrp_consec = 0
 
@@ -637,7 +642,9 @@ def run_triple(config, label: str = "",
 
                 has_sig = direction != 0
                 if xrp_skip:
-                    if has_sig:
+                    if skip_hours > 0 and xrp_skip_ts and (ts - xrp_skip_ts) > pd.Timedelta(hours=skip_hours):
+                        xrp_skip = False; xrp_skip_ts = None
+                    elif has_sig:
                         xrp_skip = False; xrp_in_skip = True
                 elif xrp_in_skip:
                     if not has_sig:
@@ -729,7 +736,7 @@ def run_triple(config, label: str = "",
                     if net < 0:
                         doge_consec += 1
                         if doge_consec >= doge_max_loss:
-                            doge_skip = True; doge_in_skip = False; doge_consec = 0
+                            doge_skip = True; doge_in_skip = False; doge_consec = 0; doge_skip_ts = ts
                     else:
                         doge_consec = 0
 
@@ -740,7 +747,9 @@ def run_triple(config, label: str = "",
                 direction = (1 if doge_mom_arr[di] > 0 else -1) if is_fire else 0
 
                 if doge_skip:
-                    if is_fire:
+                    if skip_hours > 0 and doge_skip_ts and (ts - doge_skip_ts) > pd.Timedelta(hours=skip_hours):
+                        doge_skip = False; doge_skip_ts = None
+                    elif is_fire:
                         doge_skip = False; doge_in_skip = True
                 elif doge_in_skip:
                     if not is_fire:

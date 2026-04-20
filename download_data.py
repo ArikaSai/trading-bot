@@ -19,7 +19,7 @@ from pathlib import Path
 from strategy import CoreStrategy
 
 START_DATE = '2020-01-01'
-END_DATE   = '2026-06-30'
+END_DATE   = '2099-01-01'
 
 
 def load_symbols_from_config(config_path="config.json") -> list[dict]:

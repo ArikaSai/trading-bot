@@ -151,6 +151,5 @@ class CoreStrategy:
 
     # ── 動態風險（保留備用）──────────────────────────────────────
     @staticmethod
-    def get_dynamic_risk(current_equity: float, equity_ma: float,
-                          normal_risk: float, reduced_risk: float) -> float:
+    def get_dynamic_risk(current_equity: float, equity_ma: float,normal_risk: float, reduced_risk: float) -> float:
         return normal_risk if current_equity >= equity_ma else reduced_risk

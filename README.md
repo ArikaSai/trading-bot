@@ -6,7 +6,7 @@
 - **SOL/USDT 15m**：EMA 趨勢跟蹤 + ADX 過濾 + 盤整縮緊 + 2.0R 保本 + ATR Trailing Stop
 - **ADA/USDT 1h**：Donchian Channel 動量突破 + ATR Trailing Stop
 - **XRP/USDT 1h**：Fibonacci 回撤進場（0.618）+ EMA 趨勢過濾 + ATR Trailing Stop
-- **DOGE/USDT 1h**：BB Squeeze 波動率壓縮爆發 + ATR Trailing Stop（開發中）
+- **DOGE/USDT 1h**：BB Squeeze 波動率壓縮爆發 + ATR Trailing Stop
 
 ## 功能
 - 自適應 TWAP 拆單執行（市價進場策略：資金超過單筆上限時自動拆分至多根 K 棒）
