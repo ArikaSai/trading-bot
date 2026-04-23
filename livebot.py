@@ -2073,6 +2073,12 @@ class LiveTradingBot:
                     pass # 如果是斷網導致的，這裡也會失敗，所以加個 try 避免崩潰
                 traceback.print_exc()
 
+            # 每 60 輪（約 5 分鐘）強制 GC，釋放 pandas DataFrame 的循環引用
+            self._gc_counter = getattr(self, '_gc_counter', 0) + 1
+            if self._gc_counter % 60 == 0:
+                import gc
+                gc.collect()
+
             time.sleep(self.check_interval)
 
 
